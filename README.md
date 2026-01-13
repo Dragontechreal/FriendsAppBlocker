@@ -1,6 +1,6 @@
 # iOS ESP32 Blocker
 
-https://github.com/benjamin-feldman/esp32-blocker/raw/main/demo.mov
+https://github.com/user-attachments/assets/1e6ad49e-af4c-43b5-ad96-03282375fb40
 
 A simple app blocker that bricks your iPhone to lock distracting apps. The only way to unlock them is by scanning a QR code displayed on an ESP32. 
 
