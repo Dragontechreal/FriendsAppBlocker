@@ -1,0 +1,21 @@
+#!/bin/bash
+
+CONFIG_FILE="esp32/src/config.h"
+
+if git diff --cached --name-only | grep -q "$CONFIG_FILE"; then
+    # Check if the staged version has real credentials
+    STAGED_CONTENT=$(git show :$CONFIG_FILE 2>/dev/null)
+
+    if echo "$STAGED_CONTENT" | grep -q 'WIFI_SSID'; then
+        SSID=$(echo "$STAGED_CONTENT" | grep '#define WIFI_SSID' | sed 's/.*"\(.*\)".*/\1/')
+        PASS=$(echo "$STAGED_CONTENT" | grep '#define WIFI_PASSWORD' | sed 's/.*"\(.*\)".*/\1/')
+
+        if [ "$SSID" != "your_wifi_name" ] || [ "$PASS" != "your_wifi_password" ]; then
+            echo "ERROR: Cannot commit config.h with real WiFi credentials!"
+            echo "Please reset WIFI_SSID to \"your_wifi_name\" and WIFI_PASSWORD to \"your_wifi_password\""
+            exit 1
+        fi
+    fi
+fi
+
+exit 0
