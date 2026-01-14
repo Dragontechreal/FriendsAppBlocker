@@ -17,15 +17,15 @@ uint8_t qrcodeData[QR_BUFFER_SIZE];
 
 // Last displayed code (to avoid unnecessary redraws)
 uint32_t lastCode = 0;
-uint32_t lastTimeStep = 0;
+uint32_t lastTimeCounter = 0;
 
 // Generate TOTP code using HMAC-SHA1
-uint32_t generateTOTP(uint64_t timeStep) {
+uint32_t generateTOTP(uint64_t timeCounter) {
     // Convert time step to big-endian bytes
     uint8_t timeBytes[8];
     for (int i = 7; i >= 0; i--) {
-        timeBytes[i] = timeStep & 0xFF;
-        timeStep >>= 8;
+        timeBytes[i] = timeCounter & 0xFF;
+        timeCounter >>= 8;
     }
 
     // Compute HMAC-SHA1
@@ -188,16 +188,16 @@ void setup() {
 void loop() {
     time_t now;
     time(&now);
-    uint64_t timeStep = now / TOTP_TIME_STEP;
+    uint64_t timeCounter = now / TOTP_TIME_STEP;
 
     // Only update if time step changed
-    if (timeStep != lastTimeStep) {
-        uint32_t code = generateTOTP(timeStep);
+    if (timeCounter != lastTimeCounter) {
+        uint32_t code = generateTOTP(timeCounter);
         displayQRCode(code);
-        lastTimeStep = timeStep;
+        lastTimeCounter = timeCounter;
         lastCode = code;
 
-        Serial.printf("TOTP: %06lu (step %llu)\n", code, timeStep);
+        Serial.printf("TOTP: %06lu (step %llu)\n", code, timeCounter);
     }
 
     delay(1000);
