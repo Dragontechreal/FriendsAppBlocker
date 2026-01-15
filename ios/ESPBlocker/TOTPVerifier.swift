@@ -14,24 +14,20 @@ struct TOTPVerifier {
         self.tolerance = tolerance
     }
 
-    /// Generate TOTP code for a given time step
+    /// Generate TOTP code for a given time step using SHA1(secret || counter)
     func generateCode(for counter: UInt64) -> UInt32 {
-        // Convert counter to big-endian bytes
+        // Create input: secret + counter bytes (big-endian)
+        var input = secret
         var counterBE = counter.bigEndian
-        let counterData = Data(bytes: &counterBE, count: 8)
+        withUnsafeBytes(of: &counterBE) { input.append(contentsOf: $0) }
 
-        // Compute HMAC-SHA1
+        // Compute SHA1
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
-        counterData.withUnsafeBytes { counterPtr in
-            secret.withUnsafeBytes { secretPtr in
-                CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA1),
-                       secretPtr.baseAddress, secret.count,
-                       counterPtr.baseAddress, 8,
-                       &hash)
-            }
+        input.withUnsafeBytes { inputPtr in
+            CC_SHA1(inputPtr.baseAddress, CC_LONG(input.count), &hash)
         }
 
-        // Dynamic truncation (RFC 6238)
+        // Dynamic truncation
         let offset = Int(hash[19] & 0x0F)
         let code = (UInt32(hash[offset] & 0x7F) << 24) |
                    (UInt32(hash[offset + 1]) << 16) |

@@ -3,7 +3,7 @@
 #include <time.h>
 #include <TFT_eSPI.h>
 #include <qrcode.h>
-#include <mbedtls/md.h>
+#include <mbedtls/sha1.h>
 #include "config.h"
 
 TFT_eSPI tft = TFT_eSPI();
@@ -19,33 +19,28 @@ uint8_t qrcodeData[QR_BUFFER_SIZE];
 uint32_t lastCode = 0;
 uint32_t lastTimeCounter = 0;
 
-// Generate TOTP code using HMAC-SHA1
+// Generate TOTP code using SHA1(secret || timeCounter)
 uint32_t generateTOTP(uint64_t timeCounter) {
-    // Convert time step to big-endian bytes
-    uint8_t timeBytes[8];
+    // Create input: secret + time bytes (big-endian)
+    uint8_t input[TOTP_SECRET_LEN + 8];
+    memcpy(input, TOTP_SECRET, TOTP_SECRET_LEN);
+
     for (int i = 7; i >= 0; i--) {
-        timeBytes[i] = timeCounter & 0xFF;
+        input[TOTP_SECRET_LEN + i] = timeCounter & 0xFF;
         timeCounter >>= 8;
     }
 
-    // Compute HMAC-SHA1
+    // Compute SHA1
     uint8_t hash[20];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 1);
-    mbedtls_md_hmac_starts(&ctx, TOTP_SECRET, TOTP_SECRET_LEN);
-    mbedtls_md_hmac_update(&ctx, timeBytes, 8);
-    mbedtls_md_hmac_finish(&ctx, hash);
-    mbedtls_md_free(&ctx);
+    mbedtls_sha1_ret(input, sizeof(input), hash);
 
-    // Dynamic truncation (RFC 6238)
+    // Dynamic truncation
     int offset = hash[19] & 0x0F;
     uint32_t code = ((hash[offset] & 0x7F) << 24) |
                     ((hash[offset + 1] & 0xFF) << 16) |
                     ((hash[offset + 2] & 0xFF) << 8) |
                     (hash[offset + 3] & 0xFF);
 
-    // 6-digit code
     return code % 1000000;
 }
 
