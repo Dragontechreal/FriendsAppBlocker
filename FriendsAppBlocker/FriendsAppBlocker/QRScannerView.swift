@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import AudioToolbox
 
 struct InlineQRScanner: View {
     let onCodeScanned: (String) -> Void
