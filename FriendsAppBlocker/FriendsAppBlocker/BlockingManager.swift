@@ -1,7 +1,9 @@
 import Foundation
 import Combine
 import FamilyControls
-import DeviceActivity
+import ManagedSettings
+import AuthenticationServices
+import CloudKit
 
 enum FamilyPermission: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
@@ -17,6 +19,7 @@ struct FamilyMember: Identifiable, Codable {
     var permissions: [FamilyPermission]
     var joinedAt: Date
     var isApprovedForAdmin: Bool = false
+    var appleUserID: String?
 
     enum Role: String, Codable {
         case owner
@@ -42,17 +45,88 @@ struct FamilyTimeRequest: Identifiable, Codable {
     var createdAt: Date
 }
 
+struct FriendInviteRequest: Identifiable, Codable {
+    let id: UUID
+    var fromUserID: String
+    var fromName: String
+    var toUserID: String
+    var circleRecordName: String
+    var status: Status
+    var createdAt: Date
+
+    enum Status: String, Codable {
+        case pending
+        case accepted
+        case declined
+    }
+}
+
+struct AppLimit: Identifiable, Codable {
+    let id: UUID
+    var appName: String
+    var bundleIdentifier: String
+    var timeLimitMinutes: Int
+    var isEnabled: Bool
+    var createdAt: Date
+}
+
+struct BlockRule: Identifiable, Codable {
+    let id: UUID
+    var appName: String
+    var bundleIdentifier: String
+    var isBlocked: Bool
+    var targetUserID: String?
+    var createdAt: Date
+}
+
 struct FamilyState: Codable {
     var members: [FamilyMember] = []
     var activeInvite: FamilyInvitation?
     var timeRequests: [FamilyTimeRequest] = []
     var extraTimeMinutes: Int = 0
+    var focusLimitMinutes: Int = 30
+    var blockExpiresAt: Date?
+    var isBlocking: Bool = false
+    var sharedSelection: FamilyActivitySelection = FamilyActivitySelection()
+    var appLimits: [AppLimit] = []
+    var blockRules: [BlockRule] = []
     var enrollmentStatus: EnrollmentStatus = .draft
 
     enum EnrollmentStatus: String, Codable {
         case draft
         case readyForReview
         case requiresMDM
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case members
+        case activeInvite
+        case timeRequests
+        case extraTimeMinutes
+        case focusLimitMinutes
+        case blockExpiresAt
+        case isBlocking
+        case sharedSelection
+        case appLimits
+        case blockRules
+        case enrollmentStatus
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        members = try container.decodeIfPresent([FamilyMember].self, forKey: .members) ?? []
+        activeInvite = try container.decodeIfPresent(FamilyInvitation.self, forKey: .activeInvite)
+        timeRequests = try container.decodeIfPresent([FamilyTimeRequest].self, forKey: .timeRequests) ?? []
+        extraTimeMinutes = try container.decodeIfPresent(Int.self, forKey: .extraTimeMinutes) ?? 0
+        focusLimitMinutes = try container.decodeIfPresent(Int.self, forKey: .focusLimitMinutes) ?? 30
+        blockExpiresAt = try container.decodeIfPresent(Date.self, forKey: .blockExpiresAt)
+        isBlocking = try container.decodeIfPresent(Bool.self, forKey: .isBlocking) ?? false
+        sharedSelection = try container.decodeIfPresent(FamilyActivitySelection.self, forKey: .sharedSelection) ?? FamilyActivitySelection()
+        appLimits = try container.decodeIfPresent([AppLimit].self, forKey: .appLimits) ?? []
+        blockRules = try container.decodeIfPresent([BlockRule].self, forKey: .blockRules) ?? []
+        enrollmentStatus = try container.decodeIfPresent(EnrollmentStatus.self, forKey: .enrollmentStatus) ?? .draft
     }
 }
 
@@ -66,58 +140,54 @@ class BlockingManager: ObservableObject {
     @Published var familyState = FamilyState()
     @Published var currentUserRole: FamilyMember.Role = .owner
     @Published var currentUserApprovedForAdmin = true
-    @Published var currentUserId: UUID?
-
-    private let familyControlsEnabled = false
+    @Published var currentUserIdentifier: String?
+    @Published var currentUserDisplayName = "Guest"
+    @Published var pendingInvites: [FriendInviteRequest] = []
+    @Published var isAuthenticated = false
+    @Published var isDeveloperSession = false
+    @Published var isSyncing = false
+    @Published var authError: String?
 
     private let isBlockingKey = "isBlocking"
     private let selectedAppsKey = "selectedApps"
     private let familyStateKey = "familyState"
-    private let cloudFamilyStateKey = "sharedFamilyState"
-    private let currentUserIdKey = "currentUserId"
-    private let currentUserRoleKey = "currentUserRole"
-    private let currentUserApprovedKey = "currentUserApprovedForAdmin"
+    private let currentUserIdentifierKey = "currentUserIdentifier"
+    private let currentUserDisplayNameKey = "currentUserDisplayName"
+    private let isDeveloperSessionKey = "isDeveloperSession"
+    private let pendingInvitesKey = "pendingInvites"
+    private let appContainerIdentifier = "iCloud.dev.supremezone.friendappblock"
+    private let circleRecordType = "Circle"
+    private let userRecordType = "UserProfile"
+    private let inviteRequestRecordType = "FriendInviteRequest"
+    private let blockingStore = ManagedSettingsStore()
+
+    private var privateDatabase: CKDatabase {
+        CKContainer(identifier: appContainerIdentifier).privateCloudDatabase
+    }
+
+    private var publicDatabase: CKDatabase {
+        CKContainer(identifier: appContainerIdentifier).publicCloudDatabase
+    }
+
+    private var currentCircleRecordID: CKRecord.ID?
+    private var currentInviteCode: String?
 
     private init() {
         updateAuthorizationStatus()
         loadState()
+        applyShieldingIfNeeded()
     }
 
     private func updateAuthorizationStatus() {
-        isAuthorized = false
+        isAuthorized = AuthorizationCenter.shared.authorizationStatus == .approved
     }
 
     var supportsFamilyControls: Bool {
-        familyControlsEnabled
+        true
     }
 
     var canManageBlocking: Bool {
         currentUserRole == .owner || currentUserApprovedForAdmin
-    }
-
-    /// Placeholder authorization flow until Apple approval is available.
-    func requestAuthorization() async throws {
-        isAuthorized = false
-    }
-
-    func enableBlocking() {
-        isBlocking = true
-        familyState.enrollmentStatus = .readyForReview
-        saveState()
-    }
-
-    func disableBlocking() {
-        isBlocking = false
-        saveState()
-    }
-
-    func toggleBlocking() {
-        isBlocking.toggle()
-        saveState()
-    }
-
-    func checkBlockingStatus() {
-        isBlocking = false
     }
 
     var hasItemsToBlock: Bool {
@@ -128,7 +198,159 @@ class BlockingManager: ObservableObject {
         !familyState.members.isEmpty
     }
 
+    func requestAuthorization() async throws {
+        try await AuthorizationCenter.shared.requestAuthorization(for: .individual)
+        updateAuthorizationStatus()
+    }
+
+    func handleAuthorizationResult(_ result: Result<ASAuthorization, Error>) async {
+        switch result {
+        case .success(let authorization):
+            guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                authError = "Apple sign-in did not return a valid credential."
+                return
+            }
+
+            let userIdentifier = appleIDCredential.user
+            let fullName = [appleIDCredential.fullName?.givenName, appleIDCredential.fullName?.familyName]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            let displayName = fullName.isEmpty ? "Apple User" : fullName
+
+            currentUserIdentifier = userIdentifier
+            currentUserDisplayName = displayName
+            isAuthenticated = true
+            isDeveloperSession = false
+            authError = nil
+
+            UserDefaults.standard.set(userIdentifier, forKey: currentUserIdentifierKey)
+            UserDefaults.standard.set(displayName, forKey: currentUserDisplayNameKey)
+            UserDefaults.standard.set(false, forKey: isDeveloperSessionKey)
+
+            await saveUserProfileToCloud()
+            await loadStateFromCloud()
+            await loadPendingInvites()
+
+        case .failure(let error):
+            authError = error.localizedDescription
+            isAuthenticated = false
+        }
+    }
+
+    func signInForDevelopment(as role: FamilyMember.Role) {
+        let userIdentifier = role == .owner ? "dev-owner" : "dev-friend"
+        let displayName = role == .owner ? "Dev Owner" : "Dev Friend"
+
+        currentUserIdentifier = userIdentifier
+        currentUserDisplayName = displayName
+        isAuthenticated = true
+        isDeveloperSession = true
+        authError = nil
+
+        UserDefaults.standard.set(userIdentifier, forKey: currentUserIdentifierKey)
+        UserDefaults.standard.set(displayName, forKey: currentUserDisplayNameKey)
+        UserDefaults.standard.set(true, forKey: isDeveloperSessionKey)
+
+        if role == .owner && !familyState.members.contains(where: { $0.appleUserID == userIdentifier }) {
+            familyState.members.append(FamilyMember(
+                id: UUID(),
+                name: displayName,
+                role: .owner,
+                permissions: [.blockApps, .grantTime],
+                joinedAt: Date(),
+                isApprovedForAdmin: true,
+                appleUserID: userIdentifier
+            ))
+        }
+
+        refreshCurrentUserContext()
+        loadPendingDevInvites()
+        saveState()
+    }
+
+    func signOut() {
+        currentUserIdentifier = nil
+        currentUserDisplayName = "Guest"
+        isAuthenticated = false
+        isDeveloperSession = false
+        currentCircleRecordID = nil
+        currentInviteCode = nil
+        currentUserRole = .owner
+        currentUserApprovedForAdmin = true
+        pendingInvites = []
+        UserDefaults.standard.removeObject(forKey: currentUserIdentifierKey)
+        UserDefaults.standard.removeObject(forKey: currentUserDisplayNameKey)
+        UserDefaults.standard.removeObject(forKey: isDeveloperSessionKey)
+        saveState()
+    }
+
+    var activeBlockDescription: String {
+        guard let blockExpiresAt = familyState.blockExpiresAt else { return "No time limit" }
+        if blockExpiresAt <= Date() { return "Expired" }
+        let remaining = Int(blockExpiresAt.timeIntervalSinceNow / 60)
+        return "\(max(1, remaining)) min remaining"
+    }
+
+    func enableBlocking(minutes: Int? = nil) {
+        guard isAuthorized else {
+            Task { try? await requestAuthorization() }
+            return
+        }
+
+        isBlocking = true
+        familyState.isBlocking = true
+        if let minutes {
+            familyState.focusLimitMinutes = minutes
+            familyState.blockExpiresAt = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        } else {
+            familyState.blockExpiresAt = nil
+        }
+        familyState.enrollmentStatus = .readyForReview
+        saveState()
+        applyShieldingIfNeeded()
+        Task { await syncStateToCloud() }
+    }
+
+    func disableBlocking() {
+        isBlocking = false
+        familyState.isBlocking = false
+        familyState.blockExpiresAt = nil
+        saveState()
+        applyShieldingIfNeeded()
+        Task { await syncStateToCloud() }
+    }
+
+    func toggleBlocking() {
+        isBlocking.toggle()
+        familyState.isBlocking = isBlocking
+        saveState()
+        applyShieldingIfNeeded()
+        Task { await syncStateToCloud() }
+    }
+
+    func checkBlockingStatus() {
+        if let blockExpiresAt = familyState.blockExpiresAt, blockExpiresAt <= Date() {
+            isBlocking = false
+            familyState.isBlocking = false
+            familyState.blockExpiresAt = nil
+            saveState()
+        }
+
+        if !isAuthorized {
+            isBlocking = false
+        }
+        applyShieldingIfNeeded()
+    }
+
+    func updateFocusLimit(minutes: Int) {
+        familyState.focusLimitMinutes = minutes
+        saveState()
+        Task { await syncStateToCloud() }
+    }
+
     func createInvitation(for name: String) -> FamilyInvitation? {
+        guard isAuthenticated else { return nil }
+
         if !familyState.members.contains(where: { $0.role == .owner }) {
             let owner = FamilyMember(
                 id: UUID(),
@@ -136,13 +358,13 @@ class BlockingManager: ObservableObject {
                 role: .owner,
                 permissions: [.blockApps, .grantTime],
                 joinedAt: Date(),
-                isApprovedForAdmin: true
+                isApprovedForAdmin: true,
+                appleUserID: currentUserIdentifier
             )
             familyState.members.append(owner)
-            currentUserId = owner.id
         }
 
-        let code = String(UUID().uuidString.prefix(6)).uppercased()
+        let code = String(UUID().uuidString.prefix(8)).uppercased()
         let invite = FamilyInvitation(
             id: UUID(),
             code: code,
@@ -150,45 +372,87 @@ class BlockingManager: ObservableObject {
             permissions: [.blockApps, .grantTime],
             createdAt: Date(),
             expiresAt: Date().addingTimeInterval(7 * 24 * 60 * 60),
-            note: "Use this code in the app to join the trusted circle."
+            note: "Use this code to join the shared circle."
         )
 
         familyState.activeInvite = invite
+        currentInviteCode = code
         currentUserRole = .owner
         currentUserApprovedForAdmin = true
         familyState.enrollmentStatus = .readyForReview
         saveState()
+        Task { await syncStateToCloud() }
         return invite
     }
 
-    func joinFamily(with code: String, memberName: String) -> Bool {
-        guard let invite = familyState.activeInvite,
-              invite.code.lowercased() == code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              invite.expiresAt > Date() else {
+    func joinFamily(with code: String, memberName: String) async -> Bool {
+        guard let currentUserIdentifier else { return false }
+
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if isDeveloperSession {
+            return joinLocalFamily(with: normalizedCode, memberName: memberName, userIdentifier: currentUserIdentifier)
+        }
+
+        let query = CKQuery(recordType: circleRecordType, predicate: NSPredicate(format: "inviteCode == %@", normalizedCode))
+
+        do {
+            let (matchResults, _) = try await publicDatabase.records(matching: query)
+            guard let first = matchResults.compactMap({ result -> CKRecord? in
+                switch result.1 {
+                case .success(let record): return record
+                case .failure: return nil
+                }
+            }).first else {
+                return false
+            }
+
+            currentCircleRecordID = first.recordID
+            currentInviteCode = normalizedCode
+
+            var incomingState = familyState
+            if let data = first["stateData"] as? Data,
+               let decoded = try? JSONDecoder().decode(FamilyState.self, from: data) {
+                incomingState = decoded
+            }
+
+            if incomingState.members.contains(where: { $0.appleUserID == currentUserIdentifier }) {
+                familyState = incomingState
+                isBlocking = incomingState.isBlocking
+                selectedApps = incomingState.sharedSelection
+                refreshCurrentUserContext()
+                saveState()
+                return true
+            }
+
+            let member = FamilyMember(
+                id: UUID(),
+                name: memberName.isEmpty ? "Friend" : memberName,
+                role: .member,
+                permissions: [.blockApps, .grantTime],
+                joinedAt: Date(),
+                isApprovedForAdmin: false,
+                appleUserID: currentUserIdentifier
+            )
+
+            incomingState.members.append(member)
+            familyState = incomingState
+            isBlocking = incomingState.isBlocking
+            selectedApps = incomingState.sharedSelection
+            currentUserRole = .member
+            currentUserApprovedForAdmin = false
+            familyState.activeInvite = FamilyInvitation(id: UUID(), code: normalizedCode, ownerName: familyState.members.first(where: { $0.role == .owner })?.name ?? "Owner", permissions: [.blockApps, .grantTime], createdAt: Date(), expiresAt: Date().addingTimeInterval(7*24*60*60), note: "Joined via invite")
+            familyState.enrollmentStatus = .readyForReview
+            saveState()
+
+            first["stateData"] = try? JSONEncoder().encode(familyState) as NSData
+            first["updatedAt"] = Date() as NSDate
+            _ = try await publicDatabase.save(first)
+            await saveUserProfileToCloud()
+            return true
+        } catch {
+            authError = error.localizedDescription
             return false
         }
-
-        let member = FamilyMember(
-            id: UUID(),
-            name: memberName.isEmpty ? "Friend" : memberName,
-            role: .member,
-            permissions: invite.permissions,
-            joinedAt: Date(),
-            isApprovedForAdmin: false
-        )
-
-        if familyState.members.contains(where: { $0.id == member.id }) {
-            saveState()
-            return true
-        }
-
-        familyState.members.append(member)
-        currentUserId = member.id
-        currentUserRole = .member
-        currentUserApprovedForAdmin = false
-        familyState.enrollmentStatus = .readyForReview
-        saveState()
-        return true
     }
 
     func approveMember(_ member: FamilyMember) {
@@ -198,11 +462,144 @@ class BlockingManager: ObservableObject {
             familyState.members[index].isApprovedForAdmin = true
         }
 
-        if currentUserId == member.id {
-            currentUserApprovedForAdmin = true
+        saveState()
+        Task { await syncStateToCloud() }
+    }
+
+    func inviteUser(with userID: String) async -> Bool {
+        guard isAuthenticated, let currentUserIdentifier else { return false }
+        let normalizedUserID = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUserID.isEmpty else { return false }
+
+        if isDeveloperSession {
+            let request = FriendInviteRequest(
+                id: UUID(),
+                fromUserID: currentUserIdentifier,
+                fromName: currentUserDisplayName,
+                toUserID: normalizedUserID,
+                circleRecordName: "local-dev-circle",
+                status: .pending,
+                createdAt: Date()
+            )
+            saveDevInvite(request)
+            return true
         }
 
-        saveState()
+        do {
+            let circleID = try await ensureCircleRecordExists()
+            let request = FriendInviteRequest(
+                id: UUID(),
+                fromUserID: currentUserIdentifier,
+                fromName: currentUserDisplayName,
+                toUserID: normalizedUserID,
+                circleRecordName: circleID.recordName,
+                status: .pending,
+                createdAt: Date()
+            )
+            let record = CKRecord(recordType: inviteRequestRecordType, recordID: CKRecord.ID(recordName: "invite_\(request.id.uuidString)"))
+            write(request, to: record)
+            _ = try await publicDatabase.save(record)
+            return true
+        } catch {
+            authError = error.localizedDescription
+            return false
+        }
+    }
+
+    func loadPendingInvites() async {
+        guard let currentUserIdentifier else { return }
+        if isDeveloperSession {
+            loadPendingDevInvites()
+            return
+        }
+
+        let predicate = NSPredicate(format: "toUserID == %@ AND status == %@", currentUserIdentifier, FriendInviteRequest.Status.pending.rawValue)
+        let query = CKQuery(recordType: inviteRequestRecordType, predicate: predicate)
+
+        do {
+            let (matchResults, _) = try await publicDatabase.records(matching: query)
+            pendingInvites = matchResults.compactMap { result in
+                switch result.1 {
+                case .success(let record): return readInviteRequest(from: record)
+                case .failure: return nil
+                }
+            }
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    func acceptInvite(_ invite: FriendInviteRequest) async -> Bool {
+        guard let currentUserIdentifier else { return false }
+        if isDeveloperSession {
+            if !familyState.members.contains(where: { $0.appleUserID == currentUserIdentifier }) {
+                familyState.members.append(FamilyMember(
+                    id: UUID(),
+                    name: currentUserDisplayName,
+                    role: .member,
+                    permissions: [.blockApps, .grantTime],
+                    joinedAt: Date(),
+                    isApprovedForAdmin: false,
+                    appleUserID: currentUserIdentifier
+                ))
+            }
+
+            var accepted = invite
+            accepted.status = .accepted
+            updateDevInvite(accepted)
+            pendingInvites.removeAll { $0.id == invite.id }
+            refreshCurrentUserContext()
+            saveState()
+            return true
+        }
+
+        do {
+            let circleRecordID = CKRecord.ID(recordName: invite.circleRecordName)
+            let circleRecord = try await publicDatabase.record(for: circleRecordID)
+            var incomingState = FamilyState()
+            if let data = circleRecord["stateData"] as? Data,
+               let decoded = try? JSONDecoder().decode(FamilyState.self, from: data) {
+                incomingState = decoded
+            }
+
+            if !incomingState.members.contains(where: { $0.appleUserID == currentUserIdentifier }) {
+                incomingState.members.append(FamilyMember(
+                    id: UUID(),
+                    name: currentUserDisplayName == "Guest" ? "Friend" : currentUserDisplayName,
+                    role: .member,
+                    permissions: [.blockApps, .grantTime],
+                    joinedAt: Date(),
+                    isApprovedForAdmin: false,
+                    appleUserID: currentUserIdentifier
+                ))
+            }
+
+            familyState = incomingState
+            isBlocking = incomingState.isBlocking
+            selectedApps = incomingState.sharedSelection
+            currentCircleRecordID = circleRecordID
+            currentUserRole = .member
+            currentUserApprovedForAdmin = false
+            saveState()
+
+            circleRecord["stateData"] = try? JSONEncoder().encode(familyState) as NSData
+            circleRecord["updatedAt"] = Date() as NSDate
+            _ = try await publicDatabase.save(circleRecord)
+
+            let inviteRecordID = CKRecord.ID(recordName: "invite_\(invite.id.uuidString)")
+            let inviteRecord = try await publicDatabase.record(for: inviteRecordID)
+            var accepted = invite
+            accepted.status = .accepted
+            write(accepted, to: inviteRecord)
+            _ = try await publicDatabase.save(inviteRecord)
+
+            pendingInvites.removeAll { $0.id == invite.id }
+            await saveUserProfileToCloud()
+            return true
+        } catch {
+            authError = error.localizedDescription
+            return false
+        }
     }
 
     func requestExtraTime(minutes: Int, from member: FamilyMember) {
@@ -210,12 +607,13 @@ class BlockingManager: ObservableObject {
             id: UUID(),
             requestedBy: member,
             requestedMinutes: minutes,
-            detail: "The owner wants to add extra focus time for the circle.",
+            detail: "Please grant extra focus time for the shared circle.",
             createdAt: Date()
         )
 
         familyState.timeRequests.append(request)
         saveState()
+        Task { await syncStateToCloud() }
     }
 
     func respondToTimeRequest(_ request: FamilyTimeRequest, approved: Bool, minutes: Int) {
@@ -225,61 +623,310 @@ class BlockingManager: ObservableObject {
 
         familyState.timeRequests.removeAll { $0.id == request.id }
         saveState()
+        Task { await syncStateToCloud() }
     }
 
     func grantExtraTime(minutes: Int) {
         familyState.extraTimeMinutes += minutes
+        if let blockExpiresAt = familyState.blockExpiresAt, blockExpiresAt > Date() {
+            familyState.blockExpiresAt = blockExpiresAt.addingTimeInterval(TimeInterval(minutes * 60))
+        }
         saveState()
+        Task { await syncStateToCloud() }
+    }
+
+    func selectionDidChange() {
+        saveState()
+        applyShieldingIfNeeded()
+        Task { await syncStateToCloud() }
+    }
+
+    func addAppLimit(appName: String, bundleIdentifier: String, minutes: Int) {
+        let limit = AppLimit(id: UUID(), appName: appName, bundleIdentifier: bundleIdentifier, timeLimitMinutes: minutes, isEnabled: true, createdAt: Date())
+        familyState.appLimits.append(limit)
+        saveState()
+        Task { await syncStateToCloud() }
+    }
+
+    func addBlockRule(appName: String, bundleIdentifier: String, targetUserID: String? = nil) {
+        let rule = BlockRule(id: UUID(), appName: appName, bundleIdentifier: bundleIdentifier, isBlocked: true, targetUserID: targetUserID, createdAt: Date())
+        familyState.blockRules.append(rule)
+        saveState()
+        Task { await syncStateToCloud() }
     }
 
     func removeMember(_ member: FamilyMember) {
-        guard currentUserRole == .owner else {
-            return
-        }
+        guard currentUserRole == .owner else { return }
 
         familyState.members.removeAll { $0.id == member.id }
         saveState()
+        Task { await syncStateToCloud() }
     }
 
-    private func persistCurrentUserSession() {
-        if let currentUserId,
-           let encoded = try? JSONEncoder().encode(currentUserId) {
-            UserDefaults.standard.set(encoded, forKey: currentUserIdKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: currentUserIdKey)
+    private func refreshCurrentUserContext() {
+        guard let currentUserIdentifier else {
+            currentUserRole = .owner
+            currentUserApprovedForAdmin = true
+            return
         }
 
-        UserDefaults.standard.set(currentUserRole.rawValue, forKey: currentUserRoleKey)
-        UserDefaults.standard.set(currentUserApprovedForAdmin, forKey: currentUserApprovedKey)
-    }
-
-    private func restoreCurrentUserSession() {
-        if let encoded = UserDefaults.standard.data(forKey: currentUserIdKey),
-           let decoded = try? JSONDecoder().decode(UUID.self, from: encoded) {
-            currentUserId = decoded
-        } else {
-            currentUserId = nil
-        }
-
-        if let roleString = UserDefaults.standard.string(forKey: currentUserRoleKey) {
-            currentUserRole = FamilyMember.Role(rawValue: roleString) ?? .owner
-        }
-
-        if UserDefaults.standard.object(forKey: currentUserApprovedKey) != nil {
-            currentUserApprovedForAdmin = UserDefaults.standard.bool(forKey: currentUserApprovedKey)
-        }
-
-        if let currentUserId, let member = familyState.members.first(where: { $0.id == currentUserId }) {
+        if let member = familyState.members.first(where: { $0.appleUserID == currentUserIdentifier }) {
             currentUserRole = member.role
-            currentUserApprovedForAdmin = member.isApprovedForAdmin || currentUserRole == .owner
-        } else if familyState.members.isEmpty {
+            currentUserApprovedForAdmin = member.isApprovedForAdmin || member.role == .owner
+        } else if familyState.members.contains(where: { $0.role == .owner }) {
+            currentUserRole = .member
+            currentUserApprovedForAdmin = false
+        } else {
             currentUserRole = .owner
             currentUserApprovedForAdmin = true
         }
     }
 
+    private func joinLocalFamily(with code: String, memberName: String, userIdentifier: String) -> Bool {
+        guard let invite = familyState.activeInvite,
+              invite.code.uppercased() == code,
+              invite.expiresAt > Date() else {
+            return false
+        }
+
+        if !familyState.members.contains(where: { $0.appleUserID == userIdentifier }) {
+            familyState.members.append(FamilyMember(
+                id: UUID(),
+                name: memberName.isEmpty ? currentUserDisplayName : memberName,
+                role: .member,
+                permissions: invite.permissions,
+                joinedAt: Date(),
+                isApprovedForAdmin: false,
+                appleUserID: userIdentifier
+            ))
+        }
+
+        currentUserRole = .member
+        currentUserApprovedForAdmin = false
+        familyState.enrollmentStatus = .readyForReview
+        saveState()
+        return true
+    }
+
+    private func loadAllDevInvites() -> [FriendInviteRequest] {
+        guard let data = UserDefaults.standard.data(forKey: pendingInvitesKey),
+              let decoded = try? JSONDecoder().decode([FriendInviteRequest].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    private func saveAllDevInvites(_ invites: [FriendInviteRequest]) {
+        if let encoded = try? JSONEncoder().encode(invites) {
+            UserDefaults.standard.set(encoded, forKey: pendingInvitesKey)
+        }
+    }
+
+    private func saveDevInvite(_ invite: FriendInviteRequest) {
+        var invites = loadAllDevInvites()
+        invites.removeAll { $0.id == invite.id }
+        invites.append(invite)
+        saveAllDevInvites(invites)
+    }
+
+    private func updateDevInvite(_ invite: FriendInviteRequest) {
+        var invites = loadAllDevInvites()
+        if let index = invites.firstIndex(where: { $0.id == invite.id }) {
+            invites[index] = invite
+        } else {
+            invites.append(invite)
+        }
+        saveAllDevInvites(invites)
+    }
+
+    private func loadPendingDevInvites() {
+        guard let currentUserIdentifier else {
+            pendingInvites = []
+            return
+        }
+
+        pendingInvites = loadAllDevInvites().filter {
+            $0.toUserID == currentUserIdentifier && $0.status == .pending
+        }
+    }
+
+    private func saveUserProfileToCloud() async {
+        guard let currentUserIdentifier, !isDeveloperSession else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let recordID = CKRecord.ID(recordName: "user_\(currentUserIdentifier)")
+        let record: CKRecord
+        if let existing = try? await privateDatabase.record(for: recordID) {
+            record = existing
+        } else {
+            record = CKRecord(recordType: userRecordType, recordID: recordID)
+        }
+        record["appleUserID"] = currentUserIdentifier as NSString
+        record["displayName"] = currentUserDisplayName as NSString
+        record["circleID"] = currentCircleRecordID?.recordName as NSString?
+        record["isApprovedForAdmin"] = currentUserApprovedForAdmin as NSNumber
+
+        do {
+            _ = try await privateDatabase.save(record)
+            let publicRecordID = CKRecord.ID(recordName: "public_user_\(currentUserIdentifier)")
+            let publicRecord: CKRecord
+            if let existing = try? await publicDatabase.record(for: publicRecordID) {
+                publicRecord = existing
+            } else {
+                publicRecord = CKRecord(recordType: userRecordType, recordID: publicRecordID)
+            }
+            publicRecord["appleUserID"] = currentUserIdentifier as NSString
+            publicRecord["displayName"] = currentUserDisplayName as NSString
+            publicRecord["circleID"] = currentCircleRecordID?.recordName as NSString?
+            _ = try await publicDatabase.save(publicRecord)
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private func ensureCircleRecordExists() async throws -> CKRecord.ID {
+        if let currentCircleRecordID {
+            return currentCircleRecordID
+        }
+
+        if !familyState.members.contains(where: { $0.role == .owner }) {
+            familyState.members.append(FamilyMember(
+                id: UUID(),
+                name: currentUserDisplayName == "Guest" ? "You" : currentUserDisplayName,
+                role: .owner,
+                permissions: [.blockApps, .grantTime],
+                joinedAt: Date(),
+                isApprovedForAdmin: true,
+                appleUserID: currentUserIdentifier
+            ))
+        }
+
+        let circleRecordID = CKRecord.ID(recordName: "circle_\(UUID().uuidString)")
+        currentCircleRecordID = circleRecordID
+        try await saveCircleRecord(recordID: circleRecordID)
+        return circleRecordID
+    }
+
+    private func syncStateToCloud() async {
+        guard isAuthenticated, !isDeveloperSession, let currentUserIdentifier else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let circleRecordID: CKRecord.ID
+        if let currentCircleRecordID {
+            circleRecordID = currentCircleRecordID
+        } else {
+            circleRecordID = CKRecord.ID(recordName: "circle_\(UUID().uuidString)")
+            currentCircleRecordID = circleRecordID
+        }
+
+        do {
+            try await saveCircleRecord(recordID: circleRecordID, ownerUserID: currentUserIdentifier)
+            await saveUserProfileToCloud()
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private func saveCircleRecord(recordID: CKRecord.ID, ownerUserID: String? = nil) async throws {
+        let record: CKRecord
+        if let existing = try? await publicDatabase.record(for: recordID) {
+            record = existing
+        } else {
+            record = CKRecord(recordType: circleRecordType, recordID: recordID)
+        }
+
+        record["ownerUserID"] = (ownerUserID ?? currentUserIdentifier ?? "") as NSString
+        record["inviteCode"] = currentInviteCode as NSString?
+        record["stateData"] = try? JSONEncoder().encode(familyState) as NSData
+        record["updatedAt"] = Date() as NSDate
+        _ = try await publicDatabase.save(record)
+    }
+
+    private func loadStateFromCloud() async {
+        guard isAuthenticated, !isDeveloperSession, let currentUserIdentifier else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let userRecordID = CKRecord.ID(recordName: "user_\(currentUserIdentifier)")
+        do {
+            let userRecord = try await privateDatabase.record(for: userRecordID)
+            currentUserDisplayName = userRecord["displayName"] as? String ?? currentUserDisplayName
+            if let circleID = userRecord["circleID"] as? String {
+                currentCircleRecordID = CKRecord.ID(recordName: circleID)
+            }
+
+            if let circleRecordID = currentCircleRecordID {
+                let circleRecord = try await publicDatabase.record(for: circleRecordID)
+                if let data = circleRecord["stateData"] as? Data,
+                   let decoded = try? JSONDecoder().decode(FamilyState.self, from: data) {
+                    familyState = decoded
+                    isBlocking = decoded.isBlocking
+                    selectedApps = decoded.sharedSelection
+                }
+                if let inviteCode = circleRecord["inviteCode"] as? String {
+                    currentInviteCode = inviteCode
+                }
+            }
+
+            refreshCurrentUserContext()
+            applyShieldingIfNeeded()
+            saveState()
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private func applyShieldingIfNeeded() {
+        guard isAuthorized, isBlocking else {
+            blockingStore.shield.applications = nil
+            blockingStore.shield.webDomains = nil
+            return
+        }
+
+        blockingStore.shield.applications = selectedApps.applicationTokens.isEmpty ? nil : selectedApps.applicationTokens
+        blockingStore.shield.webDomains = selectedApps.webDomainTokens.isEmpty ? nil : selectedApps.webDomainTokens
+    }
+
+    private func write(_ invite: FriendInviteRequest, to record: CKRecord) {
+        record["id"] = invite.id.uuidString as NSString
+        record["fromUserID"] = invite.fromUserID as NSString
+        record["fromName"] = invite.fromName as NSString
+        record["toUserID"] = invite.toUserID as NSString
+        record["circleRecordName"] = invite.circleRecordName as NSString
+        record["status"] = invite.status.rawValue as NSString
+        record["createdAt"] = invite.createdAt as NSDate
+    }
+
+    private func readInviteRequest(from record: CKRecord) -> FriendInviteRequest? {
+        guard let idString = record["id"] as? String,
+              let id = UUID(uuidString: idString),
+              let fromUserID = record["fromUserID"] as? String,
+              let fromName = record["fromName"] as? String,
+              let toUserID = record["toUserID"] as? String,
+              let circleRecordName = record["circleRecordName"] as? String,
+              let statusString = record["status"] as? String,
+              let status = FriendInviteRequest.Status(rawValue: statusString),
+              let createdAt = record["createdAt"] as? Date else {
+            return nil
+        }
+
+        return FriendInviteRequest(
+            id: id,
+            fromUserID: fromUserID,
+            fromName: fromName,
+            toUserID: toUserID,
+            circleRecordName: circleRecordName,
+            status: status,
+            createdAt: createdAt
+        )
+    }
+
     func saveState() {
         UserDefaults.standard.set(isBlocking, forKey: isBlockingKey)
+        familyState.isBlocking = isBlocking
+        familyState.sharedSelection = selectedApps
 
         if let encoded = try? JSONEncoder().encode(selectedApps) {
             UserDefaults.standard.set(encoded, forKey: selectedAppsKey)
@@ -289,11 +936,23 @@ class BlockingManager: ObservableObject {
             UserDefaults.standard.set(encoded, forKey: familyStateKey)
         }
 
-        persistCurrentUserSession()
+        if let currentUserIdentifier {
+            UserDefaults.standard.set(currentUserIdentifier, forKey: currentUserIdentifierKey)
+        }
+
+        if !currentUserDisplayName.isEmpty {
+            UserDefaults.standard.set(currentUserDisplayName, forKey: currentUserDisplayNameKey)
+        }
+
+        UserDefaults.standard.set(isDeveloperSession, forKey: isDeveloperSessionKey)
     }
 
     func loadState() {
         isBlocking = UserDefaults.standard.bool(forKey: isBlockingKey)
+        currentUserIdentifier = UserDefaults.standard.string(forKey: currentUserIdentifierKey)
+        currentUserDisplayName = UserDefaults.standard.string(forKey: currentUserDisplayNameKey) ?? "Guest"
+        isDeveloperSession = UserDefaults.standard.bool(forKey: isDeveloperSessionKey)
+        isAuthenticated = currentUserIdentifier != nil
 
         if let data = UserDefaults.standard.data(forKey: selectedAppsKey),
            let decoded = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data) {
@@ -305,7 +964,12 @@ class BlockingManager: ObservableObject {
             familyState = decoded
         }
 
-        restoreCurrentUserSession()
+        refreshCurrentUserContext()
+        isBlocking = familyState.isBlocking || isBlocking
+        if !familyState.sharedSelection.applicationTokens.isEmpty || !familyState.sharedSelection.webDomainTokens.isEmpty {
+            selectedApps = familyState.sharedSelection
+        }
+        loadPendingDevInvites()
         checkBlockingStatus()
     }
 }

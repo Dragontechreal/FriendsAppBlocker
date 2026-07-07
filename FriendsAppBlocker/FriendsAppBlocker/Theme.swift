@@ -2,13 +2,19 @@ import SwiftUI
 
 enum Theme {
     // Colors
-    static let background = Color(red: 0.98, green: 0.97, blue: 0.96) // #FAF8F5 - warm beige
+    static let background = Color(red: 0.95, green: 0.97, blue: 0.98)
     static let cardBackground = Color.white
-    static let accent = Color(red: 0.0, green: 0.4, blue: 1.0) // #0066FF - electric blue
-    static let textPrimary = Color(red: 0.1, green: 0.1, blue: 0.1)
-    static let textSecondary = Color(red: 0.5, green: 0.5, blue: 0.5)
+    static let controlBackground = Color(red: 0.94, green: 0.96, blue: 0.97)
+    static let accent = Color(red: 0.06, green: 0.35, blue: 0.95)
+    static let accentSoft = Color(red: 0.86, green: 0.91, blue: 1.0)
+    static let success = Color(red: 0.0, green: 0.54, blue: 0.36)
+    static let successSoft = Color(red: 0.84, green: 0.95, blue: 0.91)
+    static let warning = Color(red: 0.78, green: 0.48, blue: 0.0)
+    static let warningSoft = Color(red: 1.0, green: 0.93, blue: 0.78)
+    static let textPrimary = Color(red: 0.08, green: 0.10, blue: 0.13)
+    static let textSecondary = Color(red: 0.43, green: 0.48, blue: 0.55)
     static let destructive = Color(red: 0.95, green: 0.3, blue: 0.3)
-    static let border = Color(red: 0.9, green: 0.89, blue: 0.88)
+    static let border = Color(red: 0.86, green: 0.89, blue: 0.92)
 
     // Typography
     enum Font {

@@ -4,7 +4,19 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<!-- Placeholder until Apple approval for Family Controls is granted.
-	     Re-enable the entitlement once the capability is available for the team. -->
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.dev.supremezone.friendappblock</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.family-controls</key>
+	<true/>
 </dict>
 </plist>

@@ -23,7 +23,7 @@ struct TOTPVerifier {
 
         // Compute SHA1
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
-        input.withUnsafeBytes { inputPtr in
+        _ = input.withUnsafeBytes { inputPtr in
             CC_SHA1(inputPtr.baseAddress, CC_LONG(input.count), &hash)
         }
 
