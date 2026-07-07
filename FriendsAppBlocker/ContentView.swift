@@ -5,6 +5,7 @@ import AuthenticationServices
 struct ContentView: View {
     @StateObject private var blockingManager = BlockingManager.shared
     @AppStorage("appLanguage") private var appLanguageRaw = AppLanguage.enUS.rawValue
+    @AppStorage("appAppearance") private var appAppearanceRaw = AppAppearance.system.rawValue
     @State private var showingAppPicker = false
     @State private var inviteName = ""
     @State private var joinName = ""
@@ -27,11 +28,23 @@ struct ContentView: View {
         AppLanguage(rawValue: appLanguageRaw) ?? .enUS
     }
 
+    private var appAppearance: AppAppearance {
+        AppAppearance(rawValue: appAppearanceRaw) ?? .system
+    }
+
     private var languageBinding: Binding<AppLanguage> {
         Binding {
             appLanguage
         } set: { newValue in
             appLanguageRaw = newValue.rawValue
+        }
+    }
+
+    private var appearanceBinding: Binding<AppAppearance> {
+        Binding {
+            appAppearance
+        } set: { newValue in
+            appAppearanceRaw = newValue.rawValue
         }
     }
 
@@ -75,6 +88,7 @@ struct ContentView: View {
                 await blockingManager.loadPendingInvites()
             }
         }
+        .preferredColorScheme(appAppearance.colorScheme)
     }
 
     private var loginView: some View {
@@ -223,6 +237,7 @@ struct ContentView: View {
     private var settingsPage: some View {
         pageScroll {
             headerSection(title: t("settingsTitle"), subtitle: blockingManager.isDeveloperSession ? t("developmentSession") : t("signedInWithApple"))
+            appearanceSection
             languageSection
             accountSection
             settingsInfoSection
@@ -327,7 +342,8 @@ struct ContentView: View {
                         permissions: [.grantTime],
                         joinedAt: Date(),
                         isApprovedForAdmin: blockingManager.currentUserApprovedForAdmin,
-                        appleUserID: blockingManager.currentUserIdentifier
+                        appleUserID: blockingManager.currentUserIdentifier,
+                        appUserID: blockingManager.currentAppUserID
                     )
                 )
                 selectedTab = .pulse
@@ -541,6 +557,21 @@ struct ContentView: View {
         .sectionPanel()
     }
 
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            sectionTitle(t("appearance"), icon: "circle.lefthalf.filled")
+
+            Picker(t("appearance"), selection: appearanceBinding) {
+                ForEach(AppAppearance.allCases) { appearance in
+                    Text(appearance.title(language: appLanguage))
+                        .tag(appearance)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .sectionPanel()
+    }
+
     private var accessSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             sectionTitle(t("trustedAccess"), icon: "person.crop.circle.badge.checkmark")
@@ -589,7 +620,7 @@ struct ContentView: View {
                 }
             }
 
-            TextField(t("friendUserID"), text: $inviteUserID)
+            TextField(t("friendID"), text: $inviteUserID)
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -602,7 +633,7 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                Label(t("sendUserIDInvite"), systemImage: "paperplane.fill")
+                Label(t("sendFriendIDInvite"), systemImage: "paperplane.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryPillButtonStyle())
@@ -736,10 +767,13 @@ struct ContentView: View {
                     Text(blockingManager.currentUserDisplayName)
                         .font(Theme.Font.heading())
                         .foregroundStyle(Theme.textPrimary)
-                    if let userID = blockingManager.currentUserIdentifier {
-                        Text(userID)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    if !blockingManager.currentAppUserID.isEmpty {
+                        Text(t("yourFriendID"))
+                            .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
+                        Text(blockingManager.currentAppUserID)
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Theme.accent)
                             .textSelection(.enabled)
                     }
                 }
@@ -864,6 +898,30 @@ private enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+private enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    func title(language: AppLanguage) -> String {
+        switch self {
+        case .system: return L10n.text("appearanceSystem", language: language)
+        case .light: return L10n.text("appearanceLight", language: language)
+        case .dark: return L10n.text("appearanceDark", language: language)
+        }
+    }
+}
+
 private enum L10n {
     static func text(_ key: String, language: AppLanguage) -> String {
         strings[language]?[key] ?? strings[.enUS]?[key] ?? key
@@ -878,6 +936,10 @@ private enum L10n {
             "allowance": "Allowance",
             "appName": "Friend Blocker",
             "appState": "App State",
+            "appearance": "Appearance",
+            "appearanceDark": "Dark",
+            "appearanceLight": "Light",
+            "appearanceSystem": "System",
             "appsSites": "Apps & Sites",
             "approve": "Approve",
             "approveAccess": "Approve access",
@@ -902,7 +964,7 @@ private enum L10n {
             "familyControls": "Family Controls",
             "focusProtected": "Focus is protected",
             "friend": "Friend",
-            "friendUserID": "Friend user ID",
+            "friendID": "Friend ID",
             "idle": "Idle",
             "invite": "Invite",
             "inviteCode": "Invite code",
@@ -954,7 +1016,7 @@ private enum L10n {
             "role": "Role",
             "selectAppsSites": "Select apps and sites",
             "selection": "Selection",
-            "sendUserIDInvite": "Send user ID invite",
+            "sendFriendIDInvite": "Send Friend ID invite",
             "settingsTitle": "Settings",
             "sharedSelectionDescription": "Friends can apply limits to this shared selection.",
             "signOut": "Sign out",
@@ -972,6 +1034,7 @@ private enum L10n {
             "waitingApproval": "Waiting approval",
             "wantsToAddYou": "Wants to add you",
             "yourDisplayName": "Your display name",
+            "yourFriendID": "Your Friend ID",
             "yourName": "Your name",
             "approvedFriend": "Approved friend"
         ],
@@ -983,6 +1046,10 @@ private enum L10n {
             "allowance": "Extra-Zeit",
             "appName": "Friend Blocker",
             "appState": "App-Status",
+            "appearance": "Darstellung",
+            "appearanceDark": "Dunkel",
+            "appearanceLight": "Hell",
+            "appearanceSystem": "System",
             "appsSites": "Apps & Websites",
             "approve": "Genehmigen",
             "approveAccess": "Zugriff erlauben",
@@ -1007,7 +1074,7 @@ private enum L10n {
             "familyControls": "Family Controls",
             "focusProtected": "Fokus ist geschützt",
             "friend": "Freund",
-            "friendUserID": "User-ID des Freundes",
+            "friendID": "Friend ID",
             "idle": "Inaktiv",
             "invite": "Einladen",
             "inviteCode": "Einladungscode",
@@ -1059,7 +1126,7 @@ private enum L10n {
             "role": "Rolle",
             "selectAppsSites": "Apps und Websites auswählen",
             "selection": "Auswahl",
-            "sendUserIDInvite": "User-ID-Einladung senden",
+            "sendFriendIDInvite": "Friend-ID-Einladung senden",
             "settingsTitle": "Einstellungen",
             "sharedSelectionDescription": "Freunde können Limits auf diese gemeinsame Auswahl anwenden.",
             "signOut": "Abmelden",
@@ -1077,6 +1144,7 @@ private enum L10n {
             "waitingApproval": "Wartet auf Genehmigung",
             "wantsToAddYou": "Möchte dich hinzufügen",
             "yourDisplayName": "Dein Anzeigename",
+            "yourFriendID": "Deine Friend ID",
             "yourName": "Dein Name",
             "approvedFriend": "Genehmigter Freund"
         ]
