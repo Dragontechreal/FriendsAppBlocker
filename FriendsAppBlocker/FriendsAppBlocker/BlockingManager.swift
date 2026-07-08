@@ -815,7 +815,11 @@ class BlockingManager: ObservableObject {
         #if DEBUG
         print("CloudKit \(context) failed: \(error)")
         #endif
-        authError = "Cloud sync failed. Please check iCloud and try again."
+        if isMissingCloudSchema(error) {
+            authError = "CloudKit production schema is missing. Deploy the CloudKit schema before using TestFlight."
+        } else {
+            authError = "Cloud sync failed. Please check iCloud and try again."
+        }
     }
 
     private func isMissingCloudSchema(_ error: Error) -> Bool {
