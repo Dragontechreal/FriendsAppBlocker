@@ -876,6 +876,7 @@ struct ContentView: View {
                 .font(Theme.Font.caption())
                 .foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             Spacer()
         }
         .padding(Theme.Spacing.md)

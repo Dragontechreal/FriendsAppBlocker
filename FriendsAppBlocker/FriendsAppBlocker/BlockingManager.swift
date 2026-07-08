@@ -585,6 +585,7 @@ class BlockingManager: ObservableObject {
         } catch {
             if isMissingCloudSchema(error) {
                 pendingInvites = []
+                setCloudError(error, context: "load pending invites")
                 return
             }
             setCloudError(error, context: "load pending invites")
@@ -815,11 +816,25 @@ class BlockingManager: ObservableObject {
         #if DEBUG
         print("CloudKit \(context) failed: \(error)")
         #endif
-        if isMissingCloudSchema(error) {
-            authError = "CloudKit production schema is missing. Deploy the CloudKit schema before using TestFlight."
-        } else {
-            authError = "Cloud sync failed. Please check iCloud and try again."
+        authError = cloudDiagnosticMessage(for: error, context: context)
+    }
+
+    private func cloudDiagnosticMessage(for error: Error, context: String) -> String {
+        guard let cloudError = error as? CKError else {
+            return "Cloud sync failed while trying to \(context): \(error.localizedDescription)"
         }
+
+        var lines = [
+            "CloudKit failed while trying to \(context).",
+            "Code: \(cloudError.code.rawValue) (\(cloudError.code))",
+            "Message: \(cloudError.localizedDescription)"
+        ]
+
+        if isMissingCloudSchema(error) {
+            lines.append("Fix: deploy the CloudKit Development schema to Production for TestFlight.")
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     private func isMissingCloudSchema(_ error: Error) -> Bool {
