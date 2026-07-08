@@ -495,7 +495,7 @@ class BlockingManager: ObservableObject {
             await saveUserProfileToCloud()
             return true
         } catch {
-            setCloudError()
+            setCloudError(error, context: "join family")
             return false
         }
     }
@@ -559,7 +559,7 @@ class BlockingManager: ObservableObject {
             _ = try await publicDatabase.save(record)
             return true
         } catch {
-            setCloudError()
+            setCloudError(error, context: "send invite")
             return false
         }
     }
@@ -583,7 +583,11 @@ class BlockingManager: ObservableObject {
                 }
             }
         } catch {
-            setCloudError()
+            if isMissingCloudSchema(error) {
+                pendingInvites = []
+                return
+            }
+            setCloudError(error, context: "load pending invites")
         }
     }
 
@@ -657,7 +661,7 @@ class BlockingManager: ObservableObject {
             await saveUserProfileToCloud()
             return true
         } catch {
-            setCloudError()
+            setCloudError(error, context: "accept invite")
             return false
         }
     }
@@ -807,8 +811,16 @@ class BlockingManager: ObservableObject {
         }
     }
 
-    private func setCloudError() {
+    private func setCloudError(_ error: Error, context: String) {
+        #if DEBUG
+        print("CloudKit \(context) failed: \(error)")
+        #endif
         authError = "Cloud sync failed. Please check iCloud and try again."
+    }
+
+    private func isMissingCloudSchema(_ error: Error) -> Bool {
+        guard let cloudError = error as? CKError else { return false }
+        return cloudError.code == .unknownItem
     }
 
     private func joinLocalFamily(with code: String, memberName: String, userIdentifier: String) -> Bool {
@@ -964,7 +976,7 @@ class BlockingManager: ObservableObject {
             publicRecord["circleID"] = currentCircleRecordID?.recordName as NSString?
             _ = try await publicDatabase.save(publicRecord)
         } catch {
-            setCloudError()
+            setCloudError(error, context: "save user profile")
         }
     }
 
@@ -1009,7 +1021,7 @@ class BlockingManager: ObservableObject {
             try await saveCircleRecord(recordID: circleRecordID, ownerUserID: currentAppUserID)
             await saveUserProfileToCloud()
         } catch {
-            setCloudError()
+            setCloudError(error, context: "sync circle state")
         }
     }
 
@@ -1059,7 +1071,7 @@ class BlockingManager: ObservableObject {
             applyShieldingIfNeeded()
             saveState()
         } catch {
-            setCloudError()
+            setCloudError(error, context: "load state")
         }
     }
 
