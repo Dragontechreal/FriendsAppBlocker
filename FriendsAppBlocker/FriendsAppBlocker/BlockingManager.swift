@@ -13,9 +13,18 @@ struct FriendProfile: Identifiable, Codable, Hashable {
 }
 
 struct FriendConnection: Identifiable, Codable, Hashable {
+    enum Status: String, Codable {
+        case pending
+        case accepted
+        case declined
+    }
+
     let id: String
     var userIDs: [String]
     var displayNames: [String: String]
+    var requestedByID: String
+    var requestedToID: String
+    var status: Status
     var createdAt: Date
 
     func friend(for currentUserID: String) -> FriendProfile? {
@@ -113,6 +122,8 @@ final class BlockingManager: ObservableObject {
     @Published var currentAppUserID = ""
     @Published var currentUserDisplayName = "Guest"
     @Published var friends: [FriendProfile] = []
+    @Published var incomingFriendRequests: [FriendConnection] = []
+    @Published var outgoingFriendRequests: [FriendConnection] = []
     @Published var limits: [AppLimitPolicy] = []
     @Published var incomingRequests: [AppTimeRequest] = []
     @Published var ownRequests: [AppTimeRequest] = []
@@ -121,6 +132,7 @@ final class BlockingManager: ObservableObject {
     @Published var isSyncing = false
     @Published var authError: String?
     @Published var infoMessage: String?
+    @Published var needsDisplayName = false
 
     private let appContainerIdentifier = "iCloud.dev.supremezone.friendsappblock"
     private let profileRecordType = "UserProfile"
@@ -132,10 +144,14 @@ final class BlockingManager: ObservableObject {
     private let currentUserDisplayNameKey = "currentUserDisplayName"
     private let isDeveloperSessionKey = "isDeveloperSession"
     private let localFriendsKey = "localFriends"
+    private let localIncomingFriendRequestsKey = "localIncomingFriendRequests"
+    private let localOutgoingFriendRequestsKey = "localOutgoingFriendRequests"
     private let localLimitsKey = "localLimits"
     private let localIncomingRequestsKey = "localIncomingRequests"
     private let localOwnRequestsKey = "localOwnRequests"
     private let blockingStore = ManagedSettingsStore()
+    private var refreshTimer: AnyCancellable?
+    private var isRefreshing = false
 
     private var privateDatabase: CKDatabase {
         CKContainer(identifier: appContainerIdentifier).privateCloudDatabase
@@ -148,6 +164,7 @@ final class BlockingManager: ObservableObject {
     private init() {
         updateAuthorizationStatus()
         loadLocalState()
+        startAutoRefresh()
     }
 
     var supportsFamilyControls: Bool { true }
@@ -176,7 +193,10 @@ final class BlockingManager: ObservableObject {
             let name = [credential.fullName?.givenName, credential.fullName?.familyName]
                 .compactMap { $0 }
                 .joined(separator: " ")
-            signIn(userIdentifier: credential.user, appUserID: existingOrGeneratedAppUserID(), displayName: name.isEmpty ? "Apple User" : name, developer: false)
+            let storedName = UserDefaults.standard.string(forKey: currentUserDisplayNameKey) ?? ""
+            let displayName = storedName.isEmpty ? name : storedName
+            signIn(userIdentifier: credential.user, appUserID: existingOrGeneratedAppUserID(), displayName: displayName, developer: false)
+            needsDisplayName = isPlaceholderName(displayName)
             await afterSignIn()
         case .failure(let error):
             authError = error.localizedDescription
@@ -205,6 +225,8 @@ final class BlockingManager: ObservableObject {
         currentAppUserID = ""
         currentUserDisplayName = "Guest"
         friends = []
+        incomingFriendRequests = []
+        outgoingFriendRequests = []
         limits = []
         incomingRequests = []
         ownRequests = []
@@ -221,6 +243,8 @@ final class BlockingManager: ObservableObject {
             currentUserDisplayNameKey,
             isDeveloperSessionKey,
             localFriendsKey,
+            localIncomingFriendRequestsKey,
+            localOutgoingFriendRequestsKey,
             localLimitsKey,
             localIncomingRequestsKey,
             localOwnRequestsKey
@@ -233,9 +257,36 @@ final class BlockingManager: ObservableObject {
             loadLocalCollections()
             return
         }
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        isSyncing = true
+        defer {
+            isRefreshing = false
+            isSyncing = false
+        }
         await saveUserProfileToCloud()
         await configureNotifications()
         await loadFriends()
+        await loadFriendRequests()
+        await loadLimits()
+        await loadIncomingTimeRequests()
+        await loadOwnTimeRequests()
+    }
+
+    func refreshRemoteChanges() async {
+        guard isAuthenticated, !isDeveloperSession else {
+            loadLocalCollections()
+            return
+        }
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        isSyncing = true
+        defer {
+            isRefreshing = false
+            isSyncing = false
+        }
+        await loadFriends()
+        await loadFriendRequests()
         await loadLimits()
         await loadIncomingTimeRequests()
         await loadOwnTimeRequests()
@@ -266,14 +317,52 @@ final class BlockingManager: ObservableObject {
                     currentAppUserID: currentUserDisplayName,
                     profile.appUserID: profile.displayName
                 ],
+                requestedByID: currentAppUserID,
+                requestedToID: profile.appUserID,
+                status: .pending,
                 createdAt: Date()
             )
             let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: connection.id))
             write(connection, to: record)
             _ = try await publicDatabase.save(record)
-            await loadFriends()
+            await loadFriendRequests()
+            infoMessage = "Friend request sent to \(profile.displayName)."
         } catch {
             setCloudError(error, context: "add friend")
+        }
+    }
+
+    func acceptFriendRequest(_ request: FriendConnection) async {
+        await resolveFriendRequest(request, accepted: true)
+    }
+
+    func declineFriendRequest(_ request: FriendConnection) async {
+        await resolveFriendRequest(request, accepted: false)
+    }
+
+    private func resolveFriendRequest(_ request: FriendConnection, accepted: Bool) async {
+        var updated = request
+        updated.status = accepted ? .accepted : .declined
+
+        if isDeveloperSession {
+            if accepted, let friend = updated.friend(for: currentAppUserID), !friends.contains(friend) {
+                friends.append(friend)
+            }
+            incomingFriendRequests.removeAll { $0.id == request.id }
+            outgoingFriendRequests.removeAll { $0.id == request.id }
+            saveLocalState()
+            return
+        }
+
+        do {
+            let recordID = CKRecord.ID(recordName: request.id)
+            let record = try await publicDatabase.record(for: recordID)
+            write(updated, to: record)
+            _ = try await publicDatabase.save(record)
+            await loadFriends()
+            await loadFriendRequests()
+        } catch {
+            setCloudError(error, context: accepted ? "accept friend request" : "decline friend request")
         }
     }
 
@@ -387,15 +476,17 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        updateLocalRequest(updated)
+
         do {
             let recordID = CKRecord.ID(recordName: timeRequestRecordName(request.id))
             let record = try await publicDatabase.record(for: recordID)
             write(updated, to: record)
             _ = try await publicDatabase.save(record)
             removeNotification(for: request)
-            await loadIncomingTimeRequests()
-            await loadOwnTimeRequests()
+            await refreshRemoteChanges()
         } catch {
+            updateLocalRequest(request)
             setCloudError(error, context: "resolve request")
         }
     }
@@ -418,6 +509,9 @@ final class BlockingManager: ObservableObject {
             id: "schema_friendship_sample",
             userIDs: [currentAppUserID, sampleFriendID],
             displayNames: [currentAppUserID: currentUserDisplayName, sampleFriendID: "Schema Friend"],
+            requestedByID: currentAppUserID,
+            requestedToID: sampleFriendID,
+            status: .declined,
             createdAt: now
         )
         let sampleLimit = AppLimitPolicy(
@@ -447,13 +541,13 @@ final class BlockingManager: ObservableObject {
             updatedAt: now
         )
 
-        let friendship = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: sampleFriendship.id))
+        let friendship = await existingOrNewPublicRecord(recordType: friendshipRecordType, recordName: sampleFriendship.id)
         write(sampleFriendship, to: friendship)
-        let limit = CKRecord(recordType: limitRecordType, recordID: CKRecord.ID(recordName: "schema_limit_sample"))
+        let limit = await existingOrNewPublicRecord(recordType: limitRecordType, recordName: "schema_limit_sample")
         write(sampleLimit, to: limit)
-        let request = CKRecord(recordType: timeRequestRecordType, recordID: CKRecord.ID(recordName: "schema_request_sample"))
+        let request = await existingOrNewPublicRecord(recordType: timeRequestRecordType, recordName: "schema_request_sample")
         write(sampleRequest, to: request)
-        let profile = CKRecord(recordType: profileRecordType, recordID: CKRecord.ID(recordName: publicUserRecordName(for: sampleFriendID)))
+        let profile = await existingOrNewPublicRecord(recordType: profileRecordType, recordName: publicUserRecordName(for: sampleFriendID))
         profile["appUserID"] = sampleFriendID as NSString
         profile["displayName"] = "Schema Friend" as NSString
 
@@ -478,6 +572,14 @@ final class BlockingManager: ObservableObject {
         infoMessage = report.joined(separator: "\n")
     }
 
+    private func existingOrNewPublicRecord(recordType: String, recordName: String) async -> CKRecord {
+        let recordID = CKRecord.ID(recordName: recordName)
+        if let existing = try? await publicDatabase.record(for: recordID) {
+            return existing
+        }
+        return CKRecord(recordType: recordType, recordID: recordID)
+    }
+
     private func updateAuthorizationStatus() {
         isAuthorized = AuthorizationCenter.shared.authorizationStatus == .approved
     }
@@ -495,6 +597,19 @@ final class BlockingManager: ObservableObject {
         UserDefaults.standard.set(developer, forKey: isDeveloperSessionKey)
     }
 
+    func saveDisplayName(_ name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            authError = "Please enter a name."
+            return
+        }
+        currentUserDisplayName = trimmed
+        needsDisplayName = false
+        UserDefaults.standard.set(trimmed, forKey: currentUserDisplayNameKey)
+        await saveUserProfileToCloud()
+        await refreshAll()
+    }
+
     private func afterSignIn() async {
         await saveUserProfileToCloud()
         await refreshAll()
@@ -502,25 +617,50 @@ final class BlockingManager: ObservableObject {
 
     private func configureNotifications() async {
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
-        await saveTimeRequestSubscription()
+        await saveSubscriptions()
     }
 
-    private func saveTimeRequestSubscription() async {
+    private func saveSubscriptions() async {
         guard !currentAppUserID.isEmpty else { return }
-        let predicate = NSPredicate(format: "ANY approverIDs == %@ AND status == %@", currentAppUserID, TimeRequestStatus.open.rawValue)
-        let subscription = CKQuerySubscription(
+        let timePredicate = NSPredicate(format: "ANY approverIDs == %@ AND status == %@", currentAppUserID, TimeRequestStatus.open.rawValue)
+        let timeSubscription = CKQuerySubscription(
             recordType: timeRequestRecordType,
-            predicate: predicate,
+            predicate: timePredicate,
             subscriptionID: "time_requests_\(currentAppUserID)",
             options: [.firesOnRecordCreation, .firesOnRecordUpdate]
         )
+
+        let friendPredicate = NSPredicate(format: "requestedToID == %@ AND status == %@", currentAppUserID, FriendConnection.Status.pending.rawValue)
+        let friendSubscription = CKQuerySubscription(
+            recordType: friendshipRecordType,
+            predicate: friendPredicate,
+            subscriptionID: "friend_requests_\(currentAppUserID)",
+            options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+        )
+
+        timeSubscription.notificationInfo = notificationInfo(body: "A friend requested more time.")
+        friendSubscription.notificationInfo = notificationInfo(body: "Someone sent you a friend request.")
+
+        var errors: [String] = []
+        for (name, subscription) in [("time requests", timeSubscription), ("friend requests", friendSubscription)] {
+            do {
+                _ = try await publicDatabase.save(subscription)
+            } catch {
+                errors.append("\(name): \(shortCloudDiagnostic(error))")
+            }
+        }
+        if !errors.isEmpty {
+            infoMessage = "Notification subscription issue:\n\(errors.joined(separator: "\n"))"
+        }
+    }
+
+    private func notificationInfo(body: String) -> CKSubscription.NotificationInfo {
         let info = CKSubscription.NotificationInfo()
         info.title = "bound"
-        info.alertBody = "A friend requested more time."
+        info.alertBody = body
         info.soundName = "default"
         info.shouldBadge = true
-        subscription.notificationInfo = info
-        _ = try? await publicDatabase.save(subscription)
+        return info
     }
 
     private func notifyLimitApprovers(_ limit: AppLimitPolicy) async {
@@ -558,20 +698,50 @@ final class BlockingManager: ObservableObject {
         }
     }
 
+    private func isPlaceholderName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "Guest" || trimmed == "Apple User"
+    }
+
     private func loadFriends() async {
         guard !currentAppUserID.isEmpty, !isDeveloperSession else { return }
-        let query = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "ANY userIDs == %@", currentAppUserID))
+        let query = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "ANY userIDs == %@ AND status == %@", currentAppUserID, FriendConnection.Status.accepted.rawValue))
         do {
             let (results, _) = try await publicDatabase.records(matching: query)
             friends = results.compactMap { result in
                 guard case .success(let record) = result.1,
                       let connection = readFriendship(from: record) else { return nil }
                 return connection.friend(for: currentAppUserID)
-            }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            }
+            .filter { !isSchemaUserID($0.appUserID) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
             saveLocalState()
         } catch {
             if !isMissingCloudSchema(error) {
                 setCloudError(error, context: "load friends")
+            }
+        }
+    }
+
+    private func loadFriendRequests() async {
+        guard !currentAppUserID.isEmpty, !isDeveloperSession else { return }
+        do {
+            let incomingQuery = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "requestedToID == %@ AND status == %@", currentAppUserID, FriendConnection.Status.pending.rawValue))
+            let outgoingQuery = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "requestedByID == %@ AND status == %@", currentAppUserID, FriendConnection.Status.pending.rawValue))
+            let (incomingResults, _) = try await publicDatabase.records(matching: incomingQuery)
+            let (outgoingResults, _) = try await publicDatabase.records(matching: outgoingQuery)
+            incomingFriendRequests = incomingResults.compactMap { result in
+                guard case .success(let record) = result.1 else { return nil }
+                return readFriendship(from: record)
+            }.filter { !isSchemaFriendship($0) }
+            outgoingFriendRequests = outgoingResults.compactMap { result in
+                guard case .success(let record) = result.1 else { return nil }
+                return readFriendship(from: record)
+            }.filter { !isSchemaFriendship($0) }
+            saveLocalState()
+        } catch {
+            if !isMissingCloudSchema(error) {
+                setCloudError(error, context: "load friend requests")
             }
         }
     }
@@ -643,6 +813,14 @@ final class BlockingManager: ObservableObject {
         return FriendProfile(appUserID: id, displayName: record["displayName"] as? String ?? id)
     }
 
+    private func isSchemaUserID(_ appUserID: String) -> Bool {
+        appUserID.hasPrefix("SCHEMA-")
+    }
+
+    private func isSchemaFriendship(_ connection: FriendConnection) -> Bool {
+        connection.userIDs.contains(where: isSchemaUserID)
+    }
+
     private func hasOpenOwnRequest(for limitID: UUID) -> Bool {
         ownRequests.contains { $0.limitID == limitID && $0.status == .open }
     }
@@ -651,12 +829,17 @@ final class BlockingManager: ObservableObject {
         incomingRequests.removeAll { $0.id == request.id }
         incomingRequests.append(request)
         ownRequests.removeAll { $0.id == request.id }
-        ownRequests.append(request)
+        if request.requesterID == currentAppUserID {
+            ownRequests.append(request)
+        }
     }
 
     private func write(_ connection: FriendConnection, to record: CKRecord) {
         record["userIDs"] = connection.userIDs as NSArray
         record["displayNamesData"] = try? JSONEncoder().encode(connection.displayNames) as NSData
+        record["requestedByID"] = connection.requestedByID as NSString
+        record["requestedToID"] = connection.requestedToID as NSString
+        record["status"] = connection.status.rawValue as NSString
         record["createdAt"] = connection.createdAt as NSDate
     }
 
@@ -668,7 +851,18 @@ final class BlockingManager: ObservableObject {
            let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
             displayNames = decoded
         }
-        return FriendConnection(id: record.recordID.recordName, userIDs: userIDs, displayNames: displayNames, createdAt: createdAt)
+        let requestedByID = record["requestedByID"] as? String ?? userIDs.first ?? ""
+        let requestedToID = record["requestedToID"] as? String ?? userIDs.dropFirst().first ?? ""
+        let status = (record["status"] as? String).flatMap(FriendConnection.Status.init(rawValue:)) ?? .accepted
+        return FriendConnection(
+            id: record.recordID.recordName,
+            userIDs: userIDs,
+            displayNames: displayNames,
+            requestedByID: requestedByID,
+            requestedToID: requestedToID,
+            status: status,
+            createdAt: createdAt
+        )
     }
 
     private func write(_ limit: AppLimitPolicy, to record: CKRecord) {
@@ -723,8 +917,16 @@ final class BlockingManager: ObservableObject {
         record["approverIDs"] = request.approverIDs as NSArray
         record["requestedMinutes"] = request.requestedMinutes as NSNumber
         record["status"] = request.status.rawValue as NSString
-        record["resolvedByID"] = request.resolvedByID as NSString?
-        record["resolvedByName"] = request.resolvedByName as NSString?
+        if let resolvedByID = request.resolvedByID {
+            record["resolvedByID"] = resolvedByID as NSString
+        } else {
+            record["resolvedByID"] = nil
+        }
+        if let resolvedByName = request.resolvedByName {
+            record["resolvedByName"] = resolvedByName as NSString
+        } else {
+            record["resolvedByName"] = nil
+        }
         record["createdAt"] = request.createdAt as NSDate
         record["updatedAt"] = request.updatedAt as NSDate
     }
@@ -766,6 +968,14 @@ final class BlockingManager: ObservableObject {
         }
         blockingStore.shield.applications = limit.selection.applicationTokens.isEmpty ? nil : limit.selection.applicationTokens
         blockingStore.shield.webDomains = limit.selection.webDomainTokens.isEmpty ? nil : limit.selection.webDomainTokens
+    }
+
+    private func startAutoRefresh() {
+        refreshTimer = Timer.publish(every: 12, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { await self?.refreshRemoteChanges() }
+            }
     }
 
     private func friendshipID(_ first: String, _ second: String) -> String {
@@ -833,6 +1043,8 @@ final class BlockingManager: ObservableObject {
         UserDefaults.standard.set(currentUserDisplayName, forKey: currentUserDisplayNameKey)
         UserDefaults.standard.set(isDeveloperSession, forKey: isDeveloperSessionKey)
         encode(friends, key: localFriendsKey)
+        encode(incomingFriendRequests, key: localIncomingFriendRequestsKey)
+        encode(outgoingFriendRequests, key: localOutgoingFriendRequestsKey)
         encode(limits, key: localLimitsKey)
         encode(incomingRequests, key: localIncomingRequestsKey)
         encode(ownRequests, key: localOwnRequestsKey)
@@ -844,11 +1056,14 @@ final class BlockingManager: ObservableObject {
         currentUserDisplayName = UserDefaults.standard.string(forKey: currentUserDisplayNameKey) ?? "Guest"
         isDeveloperSession = UserDefaults.standard.bool(forKey: isDeveloperSessionKey)
         isAuthenticated = currentUserIdentifier != nil
+        needsDisplayName = isAuthenticated && !isDeveloperSession && isPlaceholderName(currentUserDisplayName)
         loadLocalCollections()
     }
 
     private func loadLocalCollections() {
         friends = decode([FriendProfile].self, key: localFriendsKey) ?? friends
+        incomingFriendRequests = decode([FriendConnection].self, key: localIncomingFriendRequestsKey) ?? []
+        outgoingFriendRequests = decode([FriendConnection].self, key: localOutgoingFriendRequestsKey) ?? []
         limits = decode([AppLimitPolicy].self, key: localLimitsKey) ?? []
         incomingRequests = decode([AppTimeRequest].self, key: localIncomingRequestsKey) ?? []
         ownRequests = decode([AppTimeRequest].self, key: localOwnRequestsKey) ?? []

@@ -1,9 +1,11 @@
 import SwiftUI
 import FamilyControls
 import AuthenticationServices
+import UIKit
 
 struct ContentView: View {
     @StateObject private var blockingManager = BlockingManager.shared
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appAppearance") private var appAppearanceRaw = AppAppearance.system.rawValue
     @AppStorage("appLanguage") private var appLanguageRaw = AppLanguage.enUS.rawValue
 
@@ -14,6 +16,15 @@ struct ContentView: View {
     @State private var showingPicker = false
     @State private var showingLimitEditor = false
     @State private var draftLimit = AppLimitPolicy.empty(ownerID: "", ownerName: "")
+    @State private var profileNameDraft = ""
+    @State private var editingProfileName = false
+    @State private var pullDistance: CGFloat = 0
+    @State private var maxPullDistance: CGFloat = 0
+    @State private var isDraggingToRefresh = false
+    @State private var isManualRefreshing = false
+    @State private var didTriggerRefreshHaptic = false
+    private let refreshRevealDistance: CGFloat = 58
+    private let refreshTriggerDistance: CGFloat = 106
 
     private enum AppTab: Hashable {
         case friends
@@ -49,6 +60,11 @@ struct ContentView: View {
                 await blockingManager.refreshAll()
             }
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                Task { await blockingManager.refreshRemoteChanges() }
+            }
+        }
         .sheet(isPresented: $showingPicker, onDismiss: {
             showingLimitEditor = true
         }) {
@@ -67,6 +83,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingLimitEditor) {
             limitEditor
+        }
+        .sheet(isPresented: $blockingManager.needsDisplayName) {
+            nameSetupSheet(canCancel: editingProfileName)
         }
     }
 
@@ -207,7 +226,62 @@ struct ContentView: View {
                 }
             }
             .sectionPanel()
+
+            friendRequestsSection
         }
+    }
+
+    private var friendRequestsSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            sectionTitle("Friend requests", icon: "envelope.badge.fill")
+
+            if blockingManager.incomingFriendRequests.isEmpty && blockingManager.outgoingFriendRequests.isEmpty {
+                statusBanner("No pending friend requests.", icon: "checkmark.circle.fill", color: Theme.success)
+            }
+
+            ForEach(blockingManager.incomingFriendRequests) { request in
+                HStack(spacing: Theme.Spacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(request.friend(for: blockingManager.currentAppUserID)?.displayName ?? "Friend")
+                            .font(Theme.Font.heading())
+                        Text("Wants to add you")
+                            .font(Theme.Font.caption())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    Spacer()
+                    Button("Accept") {
+                        Task { await blockingManager.acceptFriendRequest(request) }
+                    }
+                    .buttonStyle(PrimaryPillButtonStyle(compact: true))
+                    Button("Decline") {
+                        Task { await blockingManager.declineFriendRequest(request) }
+                    }
+                    .buttonStyle(SecondaryPillButtonStyle(compact: true))
+                }
+                .padding(Theme.Spacing.sm)
+                .background(Theme.controlBackground)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+            }
+
+            ForEach(blockingManager.outgoingFriendRequests) { request in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(request.friend(for: blockingManager.currentAppUserID)?.displayName ?? "Friend")
+                            .font(Theme.Font.heading())
+                        Text("Waiting for acceptance")
+                            .font(Theme.Font.caption())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "clock.fill")
+                        .foregroundStyle(Theme.warning)
+                }
+                .padding(Theme.Spacing.sm)
+                .background(Theme.controlBackground)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+            }
+        }
+        .sectionPanel()
     }
 
     private var limitsPage: some View {
@@ -299,6 +373,15 @@ struct ContentView: View {
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
                     .foregroundStyle(Theme.accent)
                     .textSelection(.enabled)
+                Button {
+                    profileNameDraft = blockingManager.currentUserDisplayName == "Guest" ? "" : blockingManager.currentUserDisplayName
+                    editingProfileName = true
+                    blockingManager.needsDisplayName = true
+                } label: {
+                    Label("Change name", systemImage: "pencil")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
             }
             .sectionPanel()
 
@@ -507,6 +590,58 @@ struct ContentView: View {
         return blockingManager.limits.first { $0.id == selectedRequestLimitID }
     }
 
+    private func nameSetupSheet(canCancel: Bool) -> some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    Text("Choose your name")
+                        .font(Theme.Font.title(30))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("This name is shown in friend requests and time requests. It does not have to be unique.")
+                        .font(Theme.Font.body())
+                        .foregroundStyle(Theme.textSecondary)
+                }
+
+                TextField("Name", text: $profileNameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.words)
+                    .onAppear {
+                        if profileNameDraft.isEmpty && blockingManager.currentUserDisplayName != "Guest" && blockingManager.currentUserDisplayName != "Apple User" {
+                            profileNameDraft = blockingManager.currentUserDisplayName
+                        }
+                    }
+
+                Button {
+                    Task {
+                        await blockingManager.saveDisplayName(profileNameDraft)
+                        editingProfileName = false
+                    }
+                } label: {
+                    Label("Save name", systemImage: "checkmark")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryPillButtonStyle())
+                .disabled(profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                statusMessages
+                Spacer()
+            }
+            .padding(Theme.Spacing.lg)
+            .background(Theme.background)
+            .interactiveDismissDisabled(!canCancel)
+            .toolbar {
+                if canCancel {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            editingProfileName = false
+                            blockingManager.needsDisplayName = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var statusMessages: some View {
         VStack(spacing: Theme.Spacing.sm) {
             if let info = blockingManager.infoMessage {
@@ -535,11 +670,76 @@ struct ContentView: View {
     private func page<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         ScrollView {
             VStack(spacing: Theme.Spacing.lg) {
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: PullDistancePreferenceKey.self, value: max(0, proxy.frame(in: .named("refreshScroll")).minY))
+                }
+                .frame(height: 0)
+
                 content()
             }
             .padding(Theme.Spacing.md)
             .padding(.bottom, Theme.Spacing.xl)
         }
+        .coordinateSpace(name: "refreshScroll")
+        .onPreferenceChange(PullDistancePreferenceKey.self) { distance in
+            pullDistance = distance
+            if isDraggingToRefresh {
+                maxPullDistance = max(maxPullDistance, distance)
+                if !didTriggerRefreshHaptic && maxPullDistance >= refreshTriggerDistance {
+                    didTriggerRefreshHaptic = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.8)
+                }
+            }
+        }
+        .simultaneousGesture(refreshDragGesture)
+        .overlay(alignment: .top) {
+            let visiblePullDistance = max(0, pullDistance - refreshRevealDistance)
+            let showRefreshIndicator = visiblePullDistance > 0 || isManualRefreshing
+            PullRefreshIndicator(
+                progress: min(visiblePullDistance / (refreshTriggerDistance - refreshRevealDistance), 1),
+                isRefreshing: isManualRefreshing
+            )
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.top, Theme.Spacing.sm)
+            .opacity(showRefreshIndicator ? 1 : 0)
+            .scaleEffect(showRefreshIndicator ? 1 : 0.92)
+            .offset(y: showRefreshIndicator ? 0 : -8)
+            .allowsHitTesting(false)
+            .animation(.spring(response: 0.28, dampingFraction: 0.84), value: showRefreshIndicator)
+            .animation(.easeInOut(duration: 0.18), value: isManualRefreshing)
+        }
+    }
+
+    private var refreshDragGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { _ in
+                if !isManualRefreshing {
+                    isDraggingToRefresh = true
+                    maxPullDistance = max(maxPullDistance, pullDistance)
+                    if !didTriggerRefreshHaptic && maxPullDistance >= refreshTriggerDistance {
+                        didTriggerRefreshHaptic = true
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.8)
+                    }
+                }
+            }
+            .onEnded { _ in
+                let shouldRefresh = max(maxPullDistance, pullDistance) >= refreshTriggerDistance
+                isDraggingToRefresh = false
+                maxPullDistance = 0
+                didTriggerRefreshHaptic = false
+                if shouldRefresh && !isManualRefreshing {
+                    Task { await manuallyRefresh() }
+                }
+            }
+    }
+
+    private func manuallyRefresh() async {
+        guard !isManualRefreshing else { return }
+        isManualRefreshing = true
+        await blockingManager.refreshRemoteChanges()
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        isManualRefreshing = false
     }
 
     private func header(_ title: String, _ subtitle: String) -> some View {
@@ -617,6 +817,56 @@ private enum AppAppearance: String, CaseIterable, Identifiable {
         case .light: return "Light"
         case .dark: return "Dark"
         }
+    }
+}
+
+private struct PullDistancePreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct PullRefreshIndicator: View {
+    var progress: CGFloat
+    var isRefreshing: Bool
+
+    var body: some View {
+        let clampedProgress = min(max(progress, 0), 1)
+
+        HStack(spacing: Theme.Spacing.sm) {
+            ZStack {
+                Circle()
+                    .stroke(Theme.border, lineWidth: 3)
+                    .frame(width: 30, height: 30)
+
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Theme.accent)
+                } else {
+                    Circle()
+                        .trim(from: 0, to: max(0.08, clampedProgress))
+                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .frame(width: 30, height: 30)
+                        .rotationEffect(.degrees(Double(clampedProgress) * 250))
+                        .animation(.spring(response: 0.26, dampingFraction: 0.72), value: clampedProgress)
+
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                        .scaleEffect(0.75 + clampedProgress * 0.25)
+                        .rotationEffect(.degrees(clampedProgress >= 1 ? 180 : 0))
+                        .animation(.spring(response: 0.24, dampingFraction: 0.7), value: clampedProgress >= 1)
+                }
+            }
+
+            Text(isRefreshing ? "Refreshing..." : (clampedProgress >= 1 ? "Release to refresh" : "Pull to refresh"))
+                .font(Theme.Font.caption())
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
