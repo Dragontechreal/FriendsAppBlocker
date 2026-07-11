@@ -7,7 +7,8 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		F4A274922FFC2D370056EDA1 /* Bound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = Bound.app; path = Bound.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F448D877300272FF003997F6 /* Bound-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Bound-Info.plist"; sourceTree = "<group>"; };
+		F4A274922FFC2D370056EDA1 /* Bound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bound.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -32,6 +33,7 @@
 		F4A274892FFC2D370056EDA1 = {
 			isa = PBXGroup;
 			children = (
+				F448D877300272FF003997F6 /* Bound-Info.plist */,
 				F4A274942FFC2D370056EDA1 /* FriendsAppBlocker */,
 				F4A274932FFC2D370056EDA1 /* Products */,
 			);
@@ -40,7 +42,7 @@
 		F4A274932FFC2D370056EDA1 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-					F4A274922FFC2D370056EDA1 /* Bound.app */,
+				F4A274922FFC2D370056EDA1 /* Bound.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,6 +84,23 @@
 				TargetAttributes = {
 					F4A274912FFC2D370056EDA1 = {
 						CreatedOnToolsVersion = 26.5;
+						SystemCapabilities = {
+							com.apple.ApplePay = {
+								enabled = 0;
+							};
+							com.apple.BackgroundModes = {
+								enabled = 1;
+							};
+							com.apple.CloudKit = {
+								enabled = 1;
+							};
+							com.apple.Push = {
+								enabled = 1;
+							};
+							com.apple.SignInWithApple = {
+								enabled = 1;
+							};
+						};
 					};
 				};
 			};
@@ -254,15 +273,17 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = YES;
 				CODE_SIGN_ENTITLEMENTS = FriendsAppBlocker/ESPBlocker.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 94ZF75D84W;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Bound-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Bound;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Bound;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -272,6 +293,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.supremezone.app.FriendsAppBlocker;
 				PRODUCT_NAME = Bound;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -290,15 +312,17 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = YES;
 				CODE_SIGN_ENTITLEMENTS = FriendsAppBlocker/ESPBlocker.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 94ZF75D84W;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Bound-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Bound;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Bound;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -308,6 +332,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.supremezone.app.FriendsAppBlocker;
 				PRODUCT_NAME = Bound;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
