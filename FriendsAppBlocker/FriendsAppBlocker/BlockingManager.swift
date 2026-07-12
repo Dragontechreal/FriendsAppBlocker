@@ -19,7 +19,7 @@ struct FriendConnection: Identifiable, Codable, Hashable {
         case declined
     }
 
-    let id: String
+    var id: String
     var userIDs: [String]
     var displayNames: [String: String]
     var requestedByID: String
@@ -94,7 +94,8 @@ enum TimeRequestStatus: String, Codable, CaseIterable {
 }
 
 struct AppTimeRequest: Identifiable, Codable, Hashable {
-    let id: UUID
+    var id: UUID
+    var responseToRequestID: UUID?
     var requesterID: String
     var requesterName: String
     var limitID: UUID
@@ -108,7 +109,7 @@ struct AppTimeRequest: Identifiable, Codable, Hashable {
     var updatedAt: Date
 
     var notificationIdentifier: String {
-        "time_request_\(id.uuidString)"
+        "time_request_\((responseToRequestID ?? id).uuidString)"
     }
 }
 
@@ -174,7 +175,7 @@ final class BlockingManager: ObservableObject {
     }
 
     var openOwnRequests: [AppTimeRequest] {
-        ownRequests.filter { $0.status == .open }
+        ownRequests.filter { $0.status == .open && $0.responseToRequestID == nil }
     }
 
     func requestAuthorization() async throws {
@@ -355,8 +356,9 @@ final class BlockingManager: ObservableObject {
         }
 
         do {
-            let recordID = CKRecord.ID(recordName: request.id)
-            let record = try await publicDatabase.record(for: recordID)
+            updated.id = friendResponseID(for: request, accepted: accepted)
+            updated.createdAt = Date()
+            let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: updated.id))
             write(updated, to: record)
             _ = try await publicDatabase.save(record)
             await loadFriends()
@@ -432,6 +434,7 @@ final class BlockingManager: ObservableObject {
 
         let request = AppTimeRequest(
             id: UUID(),
+            responseToRequestID: nil,
             requesterID: currentAppUserID,
             requesterName: currentUserDisplayName,
             limitID: limit.id,
@@ -464,28 +467,34 @@ final class BlockingManager: ObservableObject {
 
     func resolveRequest(_ request: AppTimeRequest, approved: Bool) async {
         guard request.status == .open else { return }
-        var updated = request
-        updated.status = approved ? .approved : .declined
-        updated.resolvedByID = currentAppUserID
-        updated.resolvedByName = currentUserDisplayName
-        updated.updatedAt = Date()
+        let originalRequestID = request.responseToRequestID ?? request.id
+        var response = request
+        response.id = UUID()
+        response.responseToRequestID = originalRequestID
+        response.status = approved ? .approved : .declined
+        response.resolvedByID = currentAppUserID
+        response.resolvedByName = currentUserDisplayName
+        response.createdAt = Date()
+        response.updatedAt = Date()
 
         if isDeveloperSession {
-            updateLocalRequest(updated)
+            updateLocalResolvedRequest(originalRequestID: originalRequestID, response: response)
             saveLocalState()
             return
         }
 
-        updateLocalRequest(updated)
+        updateLocalResolvedRequest(originalRequestID: originalRequestID, response: response)
 
         do {
-            let recordID = CKRecord.ID(recordName: timeRequestRecordName(request.id))
-            let record = try await publicDatabase.record(for: recordID)
-            write(updated, to: record)
+            let recordName = timeRequestResponseRecordName(originalRequestID: originalRequestID, responderID: currentAppUserID)
+            let record = CKRecord(recordType: timeRequestRecordType, recordID: CKRecord.ID(recordName: recordName))
+            write(response, to: record)
             _ = try await publicDatabase.save(record)
             removeNotification(for: request)
             await refreshRemoteChanges()
         } catch {
+            incomingRequests.removeAll { $0.id == response.id || $0.responseToRequestID == originalRequestID }
+            ownRequests.removeAll { $0.id == response.id || $0.responseToRequestID == originalRequestID }
             updateLocalRequest(request)
             setCloudError(error, context: "resolve request")
         }
@@ -528,6 +537,7 @@ final class BlockingManager: ObservableObject {
         )
         let sampleRequest = AppTimeRequest(
             id: sampleRequestID,
+            responseToRequestID: nil,
             requesterID: currentAppUserID,
             requesterName: currentUserDisplayName,
             limitID: sampleLimit.id,
@@ -705,14 +715,17 @@ final class BlockingManager: ObservableObject {
 
     private func loadFriends() async {
         guard !currentAppUserID.isEmpty, !isDeveloperSession else { return }
-        let query = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "ANY userIDs == %@ AND status == %@", currentAppUserID, FriendConnection.Status.accepted.rawValue))
+        let query = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "ANY userIDs == %@", currentAppUserID))
         do {
             let (results, _) = try await publicDatabase.records(matching: query)
-            friends = results.compactMap { result in
+            let connections = results.compactMap { result in
                 guard case .success(let record) = result.1,
                       let connection = readFriendship(from: record) else { return nil }
-                return connection.friend(for: currentAppUserID)
+                return connection
             }
+            .filter { !isSchemaFriendship($0) }
+            friends = visibleAcceptedFriendships(from: connections)
+                .compactMap { $0.friend(for: currentAppUserID) }
             .filter { !isSchemaUserID($0.appUserID) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
             saveLocalState()
@@ -726,18 +739,24 @@ final class BlockingManager: ObservableObject {
     private func loadFriendRequests() async {
         guard !currentAppUserID.isEmpty, !isDeveloperSession else { return }
         do {
-            let incomingQuery = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "requestedToID == %@ AND status == %@", currentAppUserID, FriendConnection.Status.pending.rawValue))
-            let outgoingQuery = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "requestedByID == %@ AND status == %@", currentAppUserID, FriendConnection.Status.pending.rawValue))
-            let (incomingResults, _) = try await publicDatabase.records(matching: incomingQuery)
-            let (outgoingResults, _) = try await publicDatabase.records(matching: outgoingQuery)
-            incomingFriendRequests = incomingResults.compactMap { result in
+            let query = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "ANY userIDs == %@", currentAppUserID))
+            let (results, _) = try await publicDatabase.records(matching: query)
+            let connections = results.compactMap { result in
                 guard case .success(let record) = result.1 else { return nil }
                 return readFriendship(from: record)
             }.filter { !isSchemaFriendship($0) }
-            outgoingFriendRequests = outgoingResults.compactMap { result in
-                guard case .success(let record) = result.1 else { return nil }
-                return readFriendship(from: record)
-            }.filter { !isSchemaFriendship($0) }
+            let resolvedPairs = Set(connections
+                .filter { $0.status != .pending }
+                .map { friendshipPairKey($0.userIDs) })
+            let pending = connections.filter {
+                $0.status == .pending && !resolvedPairs.contains(friendshipPairKey($0.userIDs))
+            }
+            incomingFriendRequests = pending
+                .filter { $0.requestedToID == currentAppUserID }
+                .sorted { $0.createdAt > $1.createdAt }
+            outgoingFriendRequests = pending
+                .filter { $0.requestedByID == currentAppUserID }
+                .sorted { $0.createdAt > $1.createdAt }
             saveLocalState()
         } catch {
             if !isMissingCloudSchema(error) {
@@ -770,10 +789,11 @@ final class BlockingManager: ObservableObject {
         query.sortDescriptors = [NSSortDescriptor(key: "updatedAt", ascending: false)]
         do {
             let (results, _) = try await publicDatabase.records(matching: query)
-            incomingRequests = results.compactMap { result in
+            let requests: [AppTimeRequest] = results.compactMap { result in
                 guard case .success(let record) = result.1 else { return nil }
                 return readTimeRequest(from: record)
             }
+            incomingRequests = mergedTimeRequests(from: requests)
             removeResolvedNotifications()
             saveLocalState()
         } catch {
@@ -789,10 +809,11 @@ final class BlockingManager: ObservableObject {
         query.sortDescriptors = [NSSortDescriptor(key: "updatedAt", ascending: false)]
         do {
             let (results, _) = try await publicDatabase.records(matching: query)
-            ownRequests = results.compactMap { result in
+            let requests: [AppTimeRequest] = results.compactMap { result in
                 guard case .success(let record) = result.1 else { return nil }
                 return readTimeRequest(from: record)
             }
+            ownRequests = mergedTimeRequests(from: requests)
             saveLocalState()
         } catch {
             if !isMissingCloudSchema(error) {
@@ -822,7 +843,7 @@ final class BlockingManager: ObservableObject {
     }
 
     private func hasOpenOwnRequest(for limitID: UUID) -> Bool {
-        ownRequests.contains { $0.limitID == limitID && $0.status == .open }
+        ownRequests.contains { $0.limitID == limitID && $0.status == .open && $0.responseToRequestID == nil }
     }
 
     private func updateLocalRequest(_ request: AppTimeRequest) {
@@ -832,6 +853,45 @@ final class BlockingManager: ObservableObject {
         if request.requesterID == currentAppUserID {
             ownRequests.append(request)
         }
+    }
+
+    private func updateLocalResolvedRequest(originalRequestID: UUID, response: AppTimeRequest) {
+        incomingRequests.removeAll { $0.id == originalRequestID || $0.responseToRequestID == originalRequestID || $0.id == response.id }
+        incomingRequests.append(response)
+        ownRequests.removeAll { $0.id == originalRequestID || $0.responseToRequestID == originalRequestID || $0.id == response.id }
+        if response.requesterID == currentAppUserID {
+            ownRequests.append(response)
+        }
+    }
+
+    private func visibleAcceptedFriendships(from connections: [FriendConnection]) -> [FriendConnection] {
+        let sorted = connections.sorted { $0.createdAt > $1.createdAt }
+        var latestByPair: [String: FriendConnection] = [:]
+        for connection in sorted where latestByPair[friendshipPairKey(connection.userIDs)] == nil {
+            latestByPair[friendshipPairKey(connection.userIDs)] = connection
+        }
+        return latestByPair.values.filter { $0.status == .accepted }
+    }
+
+    private func mergedTimeRequests(from requests: [AppTimeRequest]) -> [AppTimeRequest] {
+        var responseByOriginalID: [UUID: AppTimeRequest] = [:]
+        let responses = requests.filter { $0.responseToRequestID != nil }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        for response in responses {
+            guard let originalID = response.responseToRequestID, responseByOriginalID[originalID] == nil else { continue }
+            responseByOriginalID[originalID] = response
+        }
+
+        let originals = requests.filter { $0.responseToRequestID == nil }
+        var merged = originals.map { original in
+            responseByOriginalID[original.id] ?? original
+        }
+        let originalIDs = Set(originals.map(\.id))
+        merged.append(contentsOf: responses.filter { response in
+            guard let originalID = response.responseToRequestID else { return false }
+            return !originalIDs.contains(originalID)
+        })
+        return merged.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private func write(_ connection: FriendConnection, to record: CKRecord) {
@@ -910,6 +970,7 @@ final class BlockingManager: ObservableObject {
 
     private func write(_ request: AppTimeRequest, to record: CKRecord) {
         record["id"] = request.id.uuidString as NSString
+        record["responseToRequestID"] = (request.responseToRequestID?.uuidString ?? "") as NSString
         record["requesterID"] = request.requesterID as NSString
         record["requesterName"] = request.requesterName as NSString
         record["limitID"] = request.limitID.uuidString as NSString
@@ -946,6 +1007,7 @@ final class BlockingManager: ObservableObject {
               let updatedAt = record["updatedAt"] as? Date else { return nil }
         return AppTimeRequest(
             id: id,
+            responseToRequestID: (record["responseToRequestID"] as? String).flatMap { $0.isEmpty ? nil : UUID(uuidString: $0) },
             requesterID: requesterID,
             requesterName: requesterName,
             limitID: limitID,
@@ -982,12 +1044,25 @@ final class BlockingManager: ObservableObject {
         "friendship_\([first, second].sorted().joined(separator: "_"))"
     }
 
+    private func friendResponseID(for request: FriendConnection, accepted: Bool) -> String {
+        let action = accepted ? "accepted" : "declined"
+        return "friendship_\(action)_\(friendshipPairKey(request.userIDs))_\(currentAppUserID)"
+    }
+
+    private func friendshipPairKey(_ userIDs: [String]) -> String {
+        userIDs.sorted().joined(separator: "_")
+    }
+
     private func limitRecordName(_ id: UUID) -> String {
         "limit_\(id.uuidString)"
     }
 
     private func timeRequestRecordName(_ id: UUID) -> String {
         "time_request_\(id.uuidString)"
+    }
+
+    private func timeRequestResponseRecordName(originalRequestID: UUID, responderID: String) -> String {
+        "time_request_response_\(originalRequestID.uuidString)_\(responderID)"
     }
 
     private func existingOrGeneratedAppUserID() -> String {
