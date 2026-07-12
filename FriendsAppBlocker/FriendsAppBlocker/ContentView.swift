@@ -65,6 +65,9 @@ struct ContentView: View {
                 Task { await blockingManager.refreshRemoteChanges() }
             }
         }
+        .onChange(of: selectedTab) { _, _ in
+            Task { await blockingManager.refreshRemoteChanges() }
+        }
         .sheet(isPresented: $showingPicker, onDismiss: {
             showingLimitEditor = true
         }) {
@@ -293,6 +296,7 @@ struct ContentView: View {
                 Button {
                     draftLimit = AppLimitPolicy.empty(ownerID: blockingManager.currentAppUserID, ownerName: blockingManager.currentUserDisplayName)
                     showingPicker = true
+                    Task { await blockingManager.refreshRemoteChanges() }
                 } label: {
                     Label("New limit", systemImage: "plus")
                 }
@@ -496,6 +500,7 @@ struct ContentView: View {
         Button {
             draftLimit = limit
             showingLimitEditor = true
+            Task { await blockingManager.refreshRemoteChanges() }
         } label: {
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 HStack {
