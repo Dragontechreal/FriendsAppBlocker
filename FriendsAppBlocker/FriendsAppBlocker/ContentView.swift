@@ -1,5 +1,6 @@
 import SwiftUI
 import FamilyControls
+import DeviceActivity
 import AuthenticationServices
 import UIKit
 
@@ -627,6 +628,11 @@ struct ContentView: View {
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                     }
+
+                    if blockingManager.isAuthorized {
+                        DeviceActivityReport(.boundLimitUsage, filter: activityReportFilter(for: limit))
+                            .frame(height: 32)
+                    }
                 }
 
                 HStack {
@@ -654,6 +660,20 @@ struct ContentView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private func activityReportFilter(for limit: AppLimitPolicy) -> DeviceActivityFilter {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        let interval = DateInterval(start: start, end: Date())
+        return DeviceActivityFilter(
+            segment: .daily(during: interval),
+            users: .all,
+            devices: .init([.iPhone, .iPad]),
+            applications: limit.selection.applicationTokens,
+            categories: limit.selection.categoryTokens,
+            webDomains: limit.selection.webDomainTokens
+        )
     }
 
     private func requestApprovalRow(_ request: AppTimeRequest) -> some View {
@@ -1020,6 +1040,10 @@ private extension View {
     func sectionPanel() -> some View {
         modifier(SectionPanelModifier())
     }
+}
+
+extension DeviceActivityReport.Context {
+    static let boundLimitUsage = Self("BoundLimitUsage")
 }
 
 private struct PrimaryPillButtonStyle: ButtonStyle {

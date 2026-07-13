@@ -173,6 +173,7 @@ final class BlockingManager: ObservableObject {
     private let localLimitsKey = "localLimits"
     private let localIncomingRequestsKey = "localIncomingRequests"
     private let localOwnRequestsKey = "localOwnRequests"
+    private let screenTimeMonitorStateKey = "screenTimeMonitorState"
     private let schemaSampleLimitID = UUID(uuidString: "00000000-0000-0000-0000-000000000010")
     private let schemaSampleRequestID = UUID(uuidString: "00000000-0000-0000-0000-000000000011")
     private let blockingStore = ManagedSettingsStore()
@@ -185,6 +186,7 @@ final class BlockingManager: ObservableObject {
     private var pendingLimitDeletes: Set<UUID> = []
     private var pendingTimeRequests: [UUID: AppTimeRequest] = [:]
     private var pendingTimeResponses: [UUID: AppTimeRequest] = [:]
+    private var screenTimeMonitorState: [String: String] = [:]
 
     private var privateDatabase: CKDatabase {
         CKContainer(identifier: appContainerIdentifier).privateCloudDatabase
@@ -304,7 +306,8 @@ final class BlockingManager: ObservableObject {
             localOutgoingFriendRequestsKey,
             localLimitsKey,
             localIncomingRequestsKey,
-            localOwnRequestsKey
+            localOwnRequestsKey,
+            screenTimeMonitorStateKey
         ].forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 
@@ -1278,37 +1281,73 @@ final class BlockingManager: ObservableObject {
     private func syncScreenTimeTracking() {
         guard isAuthenticated, isAuthorized else { return }
 
+        var didUpdateMonitorState = false
+        let activeLimitKeys = Set(limits.map { screenTimeStateKey(for: $0.id) })
         let activeNames = Set(limits.map { deviceActivityName(for: $0.id) })
         let staleNames = deviceActivityCenter.activities.filter { activity in
             activity.rawValue.hasPrefix(screenTimeActivityPrefix) && !activeNames.contains(activity)
         }
+        let staleStateKeys = Set(screenTimeMonitorState.keys).subtracting(activeLimitKeys)
 
         if !staleNames.isEmpty {
             deviceActivityCenter.stopMonitoring(staleNames)
             staleNames.forEach(clearShieldStore)
         }
+        for stateKey in staleStateKeys {
+            let activityName = DeviceActivityName("\(screenTimeActivityPrefix)\(stateKey)")
+            deviceActivityCenter.stopMonitoring([activityName])
+            clearShieldStore(activityName)
+            screenTimeMonitorState.removeValue(forKey: stateKey)
+            didUpdateMonitorState = true
+        }
 
         for limit in limits {
             let activityName = deviceActivityName(for: limit.id)
-            clearShieldStore(activityName)
+            let stateKey = screenTimeStateKey(for: limit.id)
 
             guard hasTrackedSelection(limit) else {
                 deviceActivityCenter.stopMonitoring([activityName])
+                clearShieldStore(activityName)
+                if screenTimeMonitorState.removeValue(forKey: stateKey) != nil {
+                    didUpdateMonitorState = true
+                }
                 continue
             }
 
             let status = timeStatus(for: limit)
+            let signature = screenTimeMonitorSignature(for: limit, totalAvailableMinutes: status.totalAvailableMinutes)
+            let monitorChanged = screenTimeMonitorState[stateKey] != signature
+
             guard status.totalAvailableMinutes > 0 else {
+                if monitorChanged {
+                    clearShieldStore(activityName)
+                }
                 applyImmediateShield(for: limit)
                 deviceActivityCenter.stopMonitoring([activityName])
+                if monitorChanged {
+                    screenTimeMonitorState[stateKey] = signature
+                    didUpdateMonitorState = true
+                }
                 continue
             }
 
             do {
+                if monitorChanged {
+                    deviceActivityCenter.stopMonitoring([activityName])
+                    clearShieldStore(activityName)
+                }
                 try startScreenTimeMonitoring(limit, activityName: activityName, thresholdMinutes: status.totalAvailableMinutes)
+                if monitorChanged {
+                    screenTimeMonitorState[stateKey] = signature
+                    didUpdateMonitorState = true
+                }
             } catch {
                 devDiagnostics = "Screen Time tracking failed for \(limit.title): \(error.localizedDescription)"
             }
+        }
+
+        if didUpdateMonitorState {
+            saveScreenTimeMonitorState()
         }
     }
 
@@ -1327,6 +1366,8 @@ final class BlockingManager: ObservableObject {
         ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.applicationCategories = nil
         ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.webDomains = nil
         ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.webDomainCategories = nil
+        screenTimeMonitorState.removeAll()
+        saveScreenTimeMonitorState()
     }
 
     private func startScreenTimeMonitoring(_ limit: AppLimitPolicy, activityName: DeviceActivityName, thresholdMinutes: Int) throws {
@@ -1367,6 +1408,28 @@ final class BlockingManager: ObservableObject {
 
     private func deviceActivityName(for limitID: UUID) -> DeviceActivityName {
         DeviceActivityName("\(screenTimeActivityPrefix)\(limitID.uuidString)")
+    }
+
+    private func screenTimeStateKey(for limitID: UUID) -> String {
+        limitID.uuidString
+    }
+
+    private func screenTimeMonitorSignature(for limit: AppLimitPolicy, totalAvailableMinutes: Int) -> String {
+        var parts = [
+            "minutes:\(totalAvailableMinutes)",
+            "mode:\(limit.mode.rawValue)",
+            "apps:\(limit.selection.applicationTokens.count)",
+            "categories:\(limit.selection.categoryTokens.count)",
+            "web:\(limit.selection.webDomainTokens.count)"
+        ]
+        if let selectionData = try? JSONEncoder().encode(limit.selection) {
+            parts.append("selection:\(selectionData.base64EncodedString())")
+        }
+        return parts.joined(separator: "|")
+    }
+
+    private func saveScreenTimeMonitorState() {
+        UserDefaults.standard.set(screenTimeMonitorState, forKey: screenTimeMonitorStateKey)
     }
 
     private func hasTrackedSelection(_ limit: AppLimitPolicy) -> Bool {
@@ -1805,6 +1868,7 @@ final class BlockingManager: ObservableObject {
         isDeveloperSession = UserDefaults.standard.bool(forKey: isDeveloperSessionKey)
         isAuthenticated = currentUserIdentifier != nil
         needsDisplayName = isAuthenticated && !isDeveloperSession && isPlaceholderName(currentUserDisplayName)
+        screenTimeMonitorState = UserDefaults.standard.dictionary(forKey: screenTimeMonitorStateKey) as? [String: String] ?? [:]
         loadLocalCollections()
     }
 
