@@ -27,6 +27,9 @@ struct ContentView: View {
     @State private var didTriggerRefreshHaptic = false
     private let refreshRevealDistance: CGFloat = 58
     private let refreshTriggerDistance: CGFloat = 106
+    private let usageMetadataSuiteName = "group.dev.supremezone.app.FriendsAppBlocker"
+    private let usageTotalsBySelectionKey = "BoundUsageTotalsBySelection"
+    private let usageTotalsByTokenKey = "BoundUsageTotalsByToken"
 
     private enum AppTab: Hashable {
         case friends
@@ -600,6 +603,7 @@ struct ContentView: View {
 
     private func limitRow(_ limit: AppLimitPolicy) -> some View {
         let timeStatus = blockingManager.timeStatus(for: limit)
+        storeUsageMetadata(for: limit, timeStatus: timeStatus)
         return Button {
             draftLimit = limit
             showingLimitEditor = true
@@ -620,7 +624,7 @@ struct ContentView: View {
                         Text("\(timeStatus.totalAvailableMinutes)")
                             .font(Theme.Font.title(28))
                             .foregroundStyle(Theme.accent)
-                        Text("min configured")
+                        Text("min total today")
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                         Spacer()
@@ -682,6 +686,39 @@ struct ContentView: View {
 
     private func hasPreciseUsageSelection(_ limit: AppLimitPolicy) -> Bool {
         !limit.selection.applicationTokens.isEmpty || !limit.selection.webDomainTokens.isEmpty
+    }
+
+    private func storeUsageMetadata(for limit: AppLimitPolicy, timeStatus: LimitTimeStatus) {
+        guard hasPreciseUsageSelection(limit),
+              let defaults = UserDefaults(suiteName: usageMetadataSuiteName) else { return }
+
+        if let selectionKey = usageSelectionKey(for: limit) {
+            var totalsBySelection = defaults.dictionary(forKey: usageTotalsBySelectionKey) as? [String: Int] ?? [:]
+            totalsBySelection[selectionKey] = timeStatus.totalAvailableMinutes
+            defaults.set(totalsBySelection, forKey: usageTotalsBySelectionKey)
+        }
+
+        var totalsByToken = defaults.dictionary(forKey: usageTotalsByTokenKey) as? [String: Int] ?? [:]
+        for tokenKey in tokenKeys(for: limit).map({ "token:\($0)" }) {
+            totalsByToken[tokenKey] = timeStatus.totalAvailableMinutes
+        }
+        defaults.set(totalsByToken, forKey: usageTotalsByTokenKey)
+    }
+
+    private func usageSelectionKey(for limit: AppLimitPolicy) -> String? {
+        let keys = tokenKeys(for: limit)
+        guard !keys.isEmpty else { return nil }
+        return keys.map { "token:\($0)" }.sorted().joined(separator: "|")
+    }
+
+    private func tokenKeys(for limit: AppLimitPolicy) -> [String] {
+        let appKeys = limit.selection.applicationTokens.compactMap(encodedTokenKey)
+        let webKeys = limit.selection.webDomainTokens.compactMap(encodedTokenKey)
+        return appKeys + webKeys
+    }
+
+    private func encodedTokenKey<T: Encodable>(_ token: T) -> String? {
+        try? JSONEncoder().encode(token).base64EncodedString()
     }
 
     private func requestApprovalRow(_ request: AppTimeRequest) -> some View {

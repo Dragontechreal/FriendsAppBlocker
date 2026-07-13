@@ -222,6 +222,9 @@
 					F4A274912FFC2D370056EDA1 = {
 						CreatedOnToolsVersion = 26.5;
 						SystemCapabilities = {
+							com.apple.ApplicationGroups = {
+								enabled = 1;
+							};
 							com.apple.ApplePay = {
 								enabled = 0;
 							};
@@ -253,6 +256,9 @@
 					F448D89730070000003997F6 = {
 						CreatedOnToolsVersion = 26.5;
 						SystemCapabilities = {
+							com.apple.ApplicationGroups = {
+								enabled = 1;
+							};
 							com.apple.FamilyControls = {
 								enabled = 1;
 							};
