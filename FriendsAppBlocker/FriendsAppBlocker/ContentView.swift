@@ -629,9 +629,13 @@ struct ContentView: View {
                             .foregroundStyle(Theme.textSecondary)
                     }
 
-                    if blockingManager.isAuthorized {
+                    if blockingManager.isAuthorized && hasPreciseUsageSelection(limit) {
                         DeviceActivityReport(.boundLimitUsage, filter: activityReportFilter(for: limit))
                             .frame(height: 32)
+                    } else if blockingManager.isAuthorized {
+                        Text("Select individual apps to show exact app usage.")
+                            .font(Theme.Font.caption())
+                            .foregroundStyle(Theme.textSecondary)
                     }
                 }
 
@@ -671,9 +675,13 @@ struct ContentView: View {
             users: .all,
             devices: .init([.iPhone, .iPad]),
             applications: limit.selection.applicationTokens,
-            categories: limit.selection.categoryTokens,
+            categories: [],
             webDomains: limit.selection.webDomainTokens
         )
+    }
+
+    private func hasPreciseUsageSelection(_ limit: AppLimitPolicy) -> Bool {
+        !limit.selection.applicationTokens.isEmpty || !limit.selection.webDomainTokens.isEmpty
     }
 
     private func requestApprovalRow(_ request: AppTimeRequest) -> some View {
