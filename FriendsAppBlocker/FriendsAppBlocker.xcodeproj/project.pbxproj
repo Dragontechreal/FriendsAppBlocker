@@ -8,8 +8,41 @@
 
 /* Begin PBXFileReference section */
 		F448D877300272FF003997F6 /* Bound-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Bound-Info.plist"; sourceTree = "<group>"; };
+		F448D87830060000003997F6 /* BoundDeviceActivityMonitor.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BoundDeviceActivityMonitor.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		F448D88630060000003997F6 /* BoundDeviceActivityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoundDeviceActivityMonitor.swift; sourceTree = "<group>"; };
+		F448D88730060000003997F6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F448D88830060000003997F6 /* BoundDeviceActivityMonitor.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BoundDeviceActivityMonitor.entitlements; sourceTree = "<group>"; };
 		F4A274922FFC2D370056EDA1 /* Bound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bound.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXBuildFile section */
+		F448D87930060000003997F6 /* BoundDeviceActivityMonitor.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F448D87830060000003997F6 /* BoundDeviceActivityMonitor.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F448D88930060000003997F6 /* BoundDeviceActivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448D88630060000003997F6 /* BoundDeviceActivityMonitor.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		F448D87A30060000003997F6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F4A2748A2FFC2D370056EDA1 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F448D87C30060000003997F6;
+			remoteInfo = BoundDeviceActivityMonitor;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F448D87B30060000003997F6 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				F448D87930060000003997F6 /* BoundDeviceActivityMonitor.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		F4A274942FFC2D370056EDA1 /* FriendsAppBlocker */ = {
@@ -27,6 +60,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F448D88030060000003997F6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -35,14 +75,26 @@
 			children = (
 				F448D877300272FF003997F6 /* Bound-Info.plist */,
 				F4A274942FFC2D370056EDA1 /* FriendsAppBlocker */,
+				F448D87D30060000003997F6 /* FriendsAppBlockerMonitor */,
 				F4A274932FFC2D370056EDA1 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		F448D87D30060000003997F6 /* FriendsAppBlockerMonitor */ = {
+			isa = PBXGroup;
+			children = (
+				F448D88630060000003997F6 /* BoundDeviceActivityMonitor.swift */,
+				F448D88730060000003997F6 /* Info.plist */,
+				F448D88830060000003997F6 /* BoundDeviceActivityMonitor.entitlements */,
+			);
+			path = FriendsAppBlockerMonitor;
 			sourceTree = "<group>";
 		};
 		F4A274932FFC2D370056EDA1 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				F4A274922FFC2D370056EDA1 /* Bound.app */,
+				F448D87830060000003997F6 /* BoundDeviceActivityMonitor.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -57,10 +109,12 @@
 				F4A2748E2FFC2D370056EDA1 /* Sources */,
 				F4A2748F2FFC2D370056EDA1 /* Frameworks */,
 				F4A274902FFC2D370056EDA1 /* Resources */,
+				F448D87B30060000003997F6 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				F448D87E30060000003997F6 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				F4A274942FFC2D370056EDA1 /* FriendsAppBlocker */,
@@ -71,6 +125,25 @@
 			productName = Bound;
 			productReference = F4A274922FFC2D370056EDA1 /* Bound.app */;
 			productType = "com.apple.product-type.application";
+		};
+		F448D87C30060000003997F6 /* BoundDeviceActivityMonitor */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F448D88530060000003997F6 /* Build configuration list for PBXNativeTarget "BoundDeviceActivityMonitor" */;
+			buildPhases = (
+				F448D87F30060000003997F6 /* Sources */,
+				F448D88030060000003997F6 /* Frameworks */,
+				F448D88130060000003997F6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BoundDeviceActivityMonitor;
+			packageProductDependencies = (
+			);
+			productName = BoundDeviceActivityMonitor;
+			productReference = F448D87830060000003997F6 /* BoundDeviceActivityMonitor.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -94,10 +167,21 @@
 							com.apple.CloudKit = {
 								enabled = 1;
 							};
+							com.apple.FamilyControls = {
+								enabled = 1;
+							};
 							com.apple.Push = {
 								enabled = 1;
 							};
 							com.apple.SignInWithApple = {
+								enabled = 1;
+							};
+						};
+					};
+					F448D87C30060000003997F6 = {
+						CreatedOnToolsVersion = 26.5;
+						SystemCapabilities = {
+							com.apple.FamilyControls = {
 								enabled = 1;
 							};
 						};
@@ -119,12 +203,20 @@
 			projectRoot = "";
 			targets = (
 				F4A274912FFC2D370056EDA1 /* Bound */,
+				F448D87C30060000003997F6 /* BoundDeviceActivityMonitor */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		F4A274902FFC2D370056EDA1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F448D88130060000003997F6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -141,7 +233,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F448D87F30060000003997F6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F448D88930060000003997F6 /* BoundDeviceActivityMonitor.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F448D87E30060000003997F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F448D87C30060000003997F6 /* BoundDeviceActivityMonitor */;
+			targetProxy = F448D87A30060000003997F6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		F4A2749B2FFC2D380056EDA1 /* Debug */ = {
@@ -303,6 +411,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				WRAPPER_NAME = Bound.app;
 			};
 			name = Debug;
 		};
@@ -344,6 +453,67 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				WRAPPER_NAME = Bound.app;
+			};
+			name = Release;
+		};
+		F448D88330060000003997F6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_ENTITLEMENTS = FriendsAppBlockerMonitor/BoundDeviceActivityMonitor.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 94ZF75D84W;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FriendsAppBlockerMonitor/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.supremezone.app.FriendsAppBlocker.BoundDeviceActivityMonitor;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		F448D88430060000003997F6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_ENTITLEMENTS = FriendsAppBlockerMonitor/BoundDeviceActivityMonitor.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 94ZF75D84W;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FriendsAppBlockerMonitor/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.supremezone.app.FriendsAppBlocker.BoundDeviceActivityMonitor;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -364,6 +534,15 @@
 			buildConfigurations = (
 				F4A2749E2FFC2D380056EDA1 /* Debug */,
 				F4A2749F2FFC2D380056EDA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F448D88530060000003997F6 /* Build configuration list for PBXNativeTarget "BoundDeviceActivityMonitor" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F448D88330060000003997F6 /* Debug */,
+				F448D88430060000003997F6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

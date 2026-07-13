@@ -2,9 +2,10 @@ import Foundation
 import Combine
 import FamilyControls
 import ManagedSettings
+import DeviceActivity
 import AuthenticationServices
 import CloudKit
-import UserNotifications
+@preconcurrency import UserNotifications
 import UIKit
 
 struct FriendProfile: Identifiable, Codable, Hashable {
@@ -88,6 +89,25 @@ struct AppLimitPolicy: Identifiable, Codable {
     }
 }
 
+struct LimitTimeStatus: Hashable {
+    let baseMinutes: Int
+    let approvedExtraMinutes: Int
+    let usedMinutes: Int
+
+    var totalAvailableMinutes: Int {
+        baseMinutes + approvedExtraMinutes
+    }
+
+    var remainingMinutes: Int {
+        max(0, totalAvailableMinutes - usedMinutes)
+    }
+
+    var progress: Double {
+        guard totalAvailableMinutes > 0 else { return 0 }
+        return min(1, max(0, Double(remainingMinutes) / Double(totalAvailableMinutes)))
+    }
+}
+
 enum TimeRequestStatus: String, Codable, CaseIterable {
     case open
     case approved
@@ -142,7 +162,7 @@ final class BlockingManager: ObservableObject {
     private let friendshipRecordType = "Friendship"
     private let limitRecordType = "LimitPolicy"
     private let timeRequestRecordType = "TimeRequest"
-    private let cloudKitSubscriptionVersion = "v3"
+    private let cloudKitSubscriptionVersion = "v4"
     private let currentUserIdentifierKey = "currentUserIdentifier"
     private let currentAppUserIDKey = "currentAppUserID"
     private let currentUserDisplayNameKey = "currentUserDisplayName"
@@ -153,7 +173,10 @@ final class BlockingManager: ObservableObject {
     private let localLimitsKey = "localLimits"
     private let localIncomingRequestsKey = "localIncomingRequests"
     private let localOwnRequestsKey = "localOwnRequests"
+    private let schemaSampleLimitID = UUID(uuidString: "00000000-0000-0000-0000-000000000010")
+    private let schemaSampleRequestID = UUID(uuidString: "00000000-0000-0000-0000-000000000011")
     private let blockingStore = ManagedSettingsStore()
+    private let deviceActivityCenter = DeviceActivityCenter()
     private var refreshTimer: AnyCancellable?
     private var isRefreshing = false
     private var needsRefreshAfterCurrent = false
@@ -174,6 +197,8 @@ final class BlockingManager: ObservableObject {
     private init() {
         updateAuthorizationStatus()
         loadLocalState()
+        cleanupRemovedFeatureNotifications()
+        syncScreenTimeTrackingAfterLaunch()
         startAutoRefresh()
     }
 
@@ -185,6 +210,22 @@ final class BlockingManager: ObservableObject {
 
     var openOwnRequests: [AppTimeRequest] {
         ownRequests.filter { $0.status == .open && $0.responseToRequestID == nil }
+    }
+
+    func timeStatus(for limit: AppLimitPolicy) -> LimitTimeStatus {
+        let approvedExtraMinutes = ownRequests
+            .filter { request in
+                request.limitID == limit.id &&
+                request.status == .approved &&
+                Calendar.current.isDateInToday(request.updatedAt)
+            }
+            .reduce(0) { $0 + $1.requestedMinutes }
+
+        return LimitTimeStatus(
+            baseMinutes: limit.minutes,
+            approvedExtraMinutes: approvedExtraMinutes,
+            usedMinutes: usageMinutesToday(for: limit.id)
+        )
     }
 
     func requestAuthorization() async throws {
@@ -228,6 +269,7 @@ final class BlockingManager: ObservableObject {
         }
         loadLocalCollections()
         saveLocalState()
+        syncAppBadge()
     }
 
     func signOut() {
@@ -244,9 +286,14 @@ final class BlockingManager: ObservableObject {
         isDeveloperSession = false
         authError = nil
         infoMessage = nil
+        cleanupRemovedFeatureNotifications()
+        syncAppBadge(count: 0)
         selectedApps = FamilyActivitySelection()
         blockingStore.shield.applications = nil
+        blockingStore.shield.applicationCategories = nil
         blockingStore.shield.webDomains = nil
+        blockingStore.shield.webDomainCategories = nil
+        clearScreenTimeTracking()
         [
             currentUserIdentifierKey,
             currentAppUserIDKey,
@@ -458,6 +505,7 @@ final class BlockingManager: ObservableObject {
             limits.removeAll { $0.id == updated.id }
             limits.append(updated)
             saveLocalState()
+            syncScreenTimeTracking()
             return
         }
 
@@ -474,6 +522,7 @@ final class BlockingManager: ObservableObject {
             _ = try await publicDatabase.save(record)
             await loadLimits()
             await loadOwnTimeRequests()
+            syncScreenTimeTracking()
             await notifyLimitApprovers(updated)
         } catch {
             pendingLimitUpserts.removeValue(forKey: updated.id)
@@ -487,6 +536,7 @@ final class BlockingManager: ObservableObject {
         if isDeveloperSession {
             limits.removeAll { $0.id == limit.id }
             saveLocalState()
+            syncScreenTimeTracking()
             return
         }
 
@@ -500,6 +550,7 @@ final class BlockingManager: ObservableObject {
             _ = try await publicDatabase.deleteRecord(withID: CKRecord.ID(recordName: limitRecordName(limit.id)))
             await loadLimits()
             await loadOwnTimeRequests()
+            syncScreenTimeTracking()
         } catch {
             pendingLimitDeletes.remove(limit.id)
             limits = previousLimits
@@ -538,6 +589,7 @@ final class BlockingManager: ObservableObject {
             ownRequests.append(request)
             incomingRequests.append(request)
             saveLocalState()
+            syncScreenTimeTracking()
             return
         }
 
@@ -556,6 +608,7 @@ final class BlockingManager: ObservableObject {
             _ = try await publicDatabase.save(record)
             await loadOwnTimeRequests()
             await loadIncomingTimeRequests()
+            syncScreenTimeTracking()
         } catch {
             pendingTimeRequests.removeValue(forKey: request.id)
             ownRequests = previousOwnRequests
@@ -580,6 +633,7 @@ final class BlockingManager: ObservableObject {
         if isDeveloperSession {
             updateLocalResolvedRequest(originalRequestID: originalRequestID, response: response)
             saveLocalState()
+            syncScreenTimeTracking()
             return
         }
 
@@ -593,6 +647,7 @@ final class BlockingManager: ObservableObject {
             _ = try await publicDatabase.save(record)
             removeNotification(for: request)
             await refreshRemoteChanges()
+            syncScreenTimeTracking()
         } catch {
             pendingTimeResponses.removeValue(forKey: originalRequestID)
             incomingRequests.removeAll { $0.id == response.id || $0.responseToRequestID == originalRequestID }
@@ -614,8 +669,8 @@ final class BlockingManager: ObservableObject {
 
         let sampleFriendID = "SCHEMA-FRIEND"
         let now = Date()
-        let sampleLimitID = UUID(uuidString: "00000000-0000-0000-0000-000000000010") ?? UUID()
-        let sampleRequestID = UUID(uuidString: "00000000-0000-0000-0000-000000000011") ?? UUID()
+        let sampleLimitID = schemaSampleLimitID ?? UUID()
+        let sampleRequestID = schemaSampleRequestID ?? UUID()
 
         let sampleFriendship = FriendConnection(
             id: "schema_friendship_sample",
@@ -868,6 +923,8 @@ final class BlockingManager: ObservableObject {
             lines.append("Expected active subscriptions:")
             lines.append("- \(timeRequestSubscriptionID)")
             lines.append("- \(friendRequestSubscriptionID)")
+            lines.append("- \(timeRequestApprovedSubscriptionID)")
+            lines.append("- \(timeRequestDeclinedSubscriptionID)")
         } catch {
             lines.append("CloudKit subscription check failed: \(shortCloudDiagnostic(error))")
         }
@@ -907,18 +964,51 @@ final class BlockingManager: ObservableObject {
             options: [.firesOnRecordCreation, .firesOnRecordUpdate]
         )
 
+        let approvedResponsePredicate = NSPredicate(
+            format: "requesterID == %@ AND status == %@",
+            currentAppUserID,
+            TimeRequestStatus.approved.rawValue
+        )
+        let approvedResponseSubscription = CKQuerySubscription(
+            recordType: timeRequestRecordType,
+            predicate: approvedResponsePredicate,
+            subscriptionID: timeRequestApprovedSubscriptionID,
+            options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+        )
+
+        let declinedResponsePredicate = NSPredicate(
+            format: "requesterID == %@ AND status == %@",
+            currentAppUserID,
+            TimeRequestStatus.declined.rawValue
+        )
+        let declinedResponseSubscription = CKQuerySubscription(
+            recordType: timeRequestRecordType,
+            predicate: declinedResponsePredicate,
+            subscriptionID: timeRequestDeclinedSubscriptionID,
+            options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+        )
+
         timeSubscription.notificationInfo = notificationInfo(body: "A friend requested more time.")
         friendSubscription.notificationInfo = notificationInfo(body: "Someone sent you a friend request.")
+        approvedResponseSubscription.notificationInfo = notificationInfo(body: "Your time request was approved.")
+        declinedResponseSubscription.notificationInfo = notificationInfo(body: "Your time request was declined.")
 
         let staleIDs = [
             "time_requests_\(currentAppUserID)",
             "friend_requests_\(currentAppUserID)",
             "time_requests_\(currentAppUserID)_v2",
-            "friend_requests_\(currentAppUserID)_v2"
+            "friend_requests_\(currentAppUserID)_v2",
+            "time_requests_\(currentAppUserID)_v3",
+            "friend_requests_\(currentAppUserID)_v3",
+            "time_request_approved_\(currentAppUserID)_v3",
+            "time_request_declined_\(currentAppUserID)_v3"
         ]
         let existingIDs = (try? await publicDatabase.allSubscriptions().map(\.subscriptionID)) ?? []
         let existingIDSet = Set(existingIDs)
-        let errors = await replaceSubscriptions([timeSubscription, friendSubscription], deleting: staleIDs.filter { existingIDSet.contains($0) })
+        let errors = await replaceSubscriptions(
+            [timeSubscription, friendSubscription, approvedResponseSubscription, declinedResponseSubscription],
+            deleting: staleIDs.filter { existingIDSet.contains($0) }
+        )
         if !errors.isEmpty {
             infoMessage = "Notification subscription issue:\n\(errors.joined(separator: "\n"))"
         }
@@ -930,6 +1020,14 @@ final class BlockingManager: ObservableObject {
 
     private var friendRequestSubscriptionID: String {
         "friend_requests_\(currentAppUserID)_\(cloudKitSubscriptionVersion)"
+    }
+
+    private var timeRequestApprovedSubscriptionID: String {
+        "time_request_approved_\(currentAppUserID)_\(cloudKitSubscriptionVersion)"
+    }
+
+    private var timeRequestDeclinedSubscriptionID: String {
+        "time_request_declined_\(currentAppUserID)_\(cloudKitSubscriptionVersion)"
     }
 
     private func replaceSubscriptions(_ subscriptions: [CKSubscription], deleting staleIDs: [String]) async -> [String] {
@@ -986,6 +1084,7 @@ final class BlockingManager: ObservableObject {
     private func removeNotification(for request: AppTimeRequest) {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [request.notificationIdentifier])
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [request.notificationIdentifier])
+        syncAppBadge()
     }
 
     private func saveUserProfileToCloud() async {
@@ -1022,6 +1121,7 @@ final class BlockingManager: ObservableObject {
         await loadLimits()
         await loadIncomingTimeRequests()
         await loadOwnTimeRequests()
+        syncScreenTimeTracking()
     }
 
     private func loadFriends() async {
@@ -1073,7 +1173,8 @@ final class BlockingManager: ObservableObject {
                 guard case .success(let record) = result.1 else { return nil }
                 return readLimit(from: record)
             }
-            limits = limitsWithPendingOverlay(fetchedLimits)
+            .filter { !isSchemaLimit($0) }
+            limits = limitsWithPendingOverlay(uniqueLatestLimits(fetchedLimits))
             saveLocalState()
         } catch {
             if !isMissingCloudSchema(error) {
@@ -1092,6 +1193,7 @@ final class BlockingManager: ObservableObject {
                 guard case .success(let record) = result.1 else { return nil }
                 return readTimeRequest(from: record)
             }
+            .filter { !isSchemaTimeRequest($0) }
             incomingRequests = timeRequestsWithPendingOverlay(mergedTimeRequests(from: requests), includeIncoming: true)
             removeResolvedNotifications()
             saveLocalState()
@@ -1112,6 +1214,7 @@ final class BlockingManager: ObservableObject {
                 guard case .success(let record) = result.1 else { return nil }
                 return readTimeRequest(from: record)
             }
+            .filter { !isSchemaTimeRequest($0) }
             ownRequests = timeRequestsWithPendingOverlay(mergedTimeRequests(from: requests), includeIncoming: false)
             saveLocalState()
         } catch {
@@ -1125,6 +1228,7 @@ final class BlockingManager: ObservableObject {
         incomingRequests
             .filter { $0.status != .open }
             .forEach(removeNotification)
+        syncAppBadge()
     }
 
     private func fetchPublicProfile(appUserID: String) async throws -> FriendProfile? {
@@ -1141,8 +1245,181 @@ final class BlockingManager: ObservableObject {
         connection.userIDs.contains(where: isSchemaUserID)
     }
 
+    private func isSchemaLimit(_ limit: AppLimitPolicy) -> Bool {
+        limit.id == schemaSampleLimitID ||
+        isSchemaUserID(limit.ownerID) ||
+        limit.approverIDs.contains(where: isSchemaUserID) ||
+        limit.title.localizedCaseInsensitiveContains("schema sample")
+    }
+
+    private func isSchemaTimeRequest(_ request: AppTimeRequest) -> Bool {
+        request.id == schemaSampleRequestID ||
+        request.limitID == schemaSampleLimitID ||
+        isSchemaUserID(request.requesterID) ||
+        request.approverIDs.contains(where: isSchemaUserID) ||
+        request.limitTitle.localizedCaseInsensitiveContains("schema sample")
+    }
+
     private func hasOpenOwnRequest(for limitID: UUID) -> Bool {
         ownRequests.contains { $0.limitID == limitID && $0.status == .open && $0.responseToRequestID == nil }
+    }
+
+    private func usageMinutesToday(for limitID: UUID) -> Int {
+        // The main app cannot read live per-app Screen Time usage directly.
+        0
+    }
+
+    private func syncScreenTimeTrackingAfterLaunch() {
+        Task { @MainActor in
+            syncScreenTimeTracking()
+        }
+    }
+
+    private func syncScreenTimeTracking() {
+        guard isAuthenticated, isAuthorized else { return }
+
+        let activeNames = Set(limits.map { deviceActivityName(for: $0.id) })
+        let staleNames = deviceActivityCenter.activities.filter { activity in
+            activity.rawValue.hasPrefix(screenTimeActivityPrefix) && !activeNames.contains(activity)
+        }
+
+        if !staleNames.isEmpty {
+            deviceActivityCenter.stopMonitoring(staleNames)
+            staleNames.forEach(clearShieldStore)
+        }
+
+        for limit in limits {
+            let activityName = deviceActivityName(for: limit.id)
+            clearShieldStore(activityName)
+
+            guard hasTrackedSelection(limit) else {
+                deviceActivityCenter.stopMonitoring([activityName])
+                continue
+            }
+
+            let status = timeStatus(for: limit)
+            guard status.totalAvailableMinutes > 0 else {
+                applyImmediateShield(for: limit)
+                deviceActivityCenter.stopMonitoring([activityName])
+                continue
+            }
+
+            do {
+                try startScreenTimeMonitoring(limit, activityName: activityName, thresholdMinutes: status.totalAvailableMinutes)
+            } catch {
+                devDiagnostics = "Screen Time tracking failed for \(limit.title): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func clearScreenTimeTracking() {
+        let boundActivities = deviceActivityCenter.activities.filter { $0.rawValue.hasPrefix(screenTimeActivityPrefix) }
+        if !boundActivities.isEmpty {
+            deviceActivityCenter.stopMonitoring(boundActivities)
+        }
+        boundActivities.forEach(clearShieldStore)
+
+        blockingStore.shield.applications = nil
+        blockingStore.shield.applicationCategories = nil
+        blockingStore.shield.webDomains = nil
+        blockingStore.shield.webDomainCategories = nil
+        ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.applications = nil
+        ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.applicationCategories = nil
+        ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.webDomains = nil
+        ManagedSettingsStore(named: ManagedSettingsStore.Name("BoundLimitStore")).shield.webDomainCategories = nil
+    }
+
+    private func startScreenTimeMonitoring(_ limit: AppLimitPolicy, activityName: DeviceActivityName, thresholdMinutes: Int) throws {
+        let schedule = DeviceActivitySchedule(
+            intervalStart: DateComponents(hour: 0, minute: 0),
+            intervalEnd: DateComponents(hour: 23, minute: 59),
+            repeats: true
+        )
+
+        let event: DeviceActivityEvent
+        if #available(iOS 17.4, *) {
+            event = DeviceActivityEvent(
+                applications: limit.selection.applicationTokens,
+                categories: limit.selection.categoryTokens,
+                webDomains: limit.selection.webDomainTokens,
+                threshold: DateComponents(minute: thresholdMinutes),
+                includesPastActivity: true
+            )
+        } else {
+            event = DeviceActivityEvent(
+                applications: limit.selection.applicationTokens,
+                categories: limit.selection.categoryTokens,
+                webDomains: limit.selection.webDomainTokens,
+                threshold: DateComponents(minute: thresholdMinutes)
+            )
+        }
+
+        try deviceActivityCenter.startMonitoring(
+            activityName,
+            during: schedule,
+            events: [DeviceActivityEvent.Name("limitReached"): event]
+        )
+    }
+
+    private var screenTimeActivityPrefix: String {
+        "BoundLimit_"
+    }
+
+    private func deviceActivityName(for limitID: UUID) -> DeviceActivityName {
+        DeviceActivityName("\(screenTimeActivityPrefix)\(limitID.uuidString)")
+    }
+
+    private func hasTrackedSelection(_ limit: AppLimitPolicy) -> Bool {
+        !limit.selection.applicationTokens.isEmpty ||
+        !limit.selection.categoryTokens.isEmpty ||
+        !limit.selection.webDomainTokens.isEmpty
+    }
+
+    private func clearShieldStore(_ activityName: DeviceActivityName) {
+        let store = ManagedSettingsStore(named: ManagedSettingsStore.Name(activityName.rawValue))
+        store.shield.applications = nil
+        store.shield.applicationCategories = nil
+        store.shield.webDomains = nil
+        store.shield.webDomainCategories = nil
+    }
+
+    private func applyImmediateShield(for limit: AppLimitPolicy) {
+        let store = ManagedSettingsStore(named: ManagedSettingsStore.Name(deviceActivityName(for: limit.id).rawValue))
+        store.shield.applications = limit.selection.applicationTokens.isEmpty ? nil : limit.selection.applicationTokens
+        store.shield.applicationCategories = limit.selection.categoryTokens.isEmpty ? nil : .specific(limit.selection.categoryTokens)
+        store.shield.webDomains = limit.selection.webDomainTokens.isEmpty ? nil : limit.selection.webDomainTokens
+        store.shield.webDomainCategories = limit.selection.categoryTokens.isEmpty ? nil : .specific(limit.selection.categoryTokens)
+    }
+
+    private func cleanupRemovedFeatureNotifications() {
+        let removedPrefixes = ["Bound_low_time_", "Bound_monitor_"]
+        let center = UNUserNotificationCenter.current()
+        center.getPendingNotificationRequests { requests in
+            let identifiers = requests
+                .map(\.identifier)
+                .filter { identifier in removedPrefixes.contains { identifier.hasPrefix($0) } }
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        }
+        center.getDeliveredNotifications { notifications in
+            let identifiers = notifications
+                .map(\.request.identifier)
+                .filter { identifier in removedPrefixes.contains { identifier.hasPrefix($0) } }
+            center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        }
+    }
+
+    private func syncAppBadge(count explicitCount: Int? = nil) {
+        let badgeCount = explicitCount ?? actionableNotificationCount
+        UNUserNotificationCenter.current().setBadgeCount(badgeCount) { [weak self] error in
+            guard let error else { return }
+            Task { @MainActor in
+                self?.devDiagnostics = "Badge update failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private var actionableNotificationCount: Int {
+        incomingFriendRequests.count + incomingRequests.filter { $0.status == .open }.count
     }
 
     private func updateLocalRequest(_ request: AppTimeRequest) {
@@ -1189,23 +1466,35 @@ final class BlockingManager: ObservableObject {
     }
 
     private func limitsWithPendingOverlay(_ fetchedLimits: [AppLimitPolicy]) -> [AppLimitPolicy] {
-        let fetchedIDs = Set(fetchedLimits.map(\.id))
+        let uniqueFetchedLimits = uniqueLatestLimits(fetchedLimits)
+        let fetchedIDs = Set(uniqueFetchedLimits.map(\.id))
         for id in Array(pendingLimitDeletes) where !fetchedIDs.contains(id) {
             pendingLimitDeletes.remove(id)
         }
-        let fetchedLimitByID = Dictionary(uniqueKeysWithValues: fetchedLimits.map { ($0.id, $0) })
+        var fetchedLimitByID: [UUID: AppLimitPolicy] = [:]
+        for limit in uniqueFetchedLimits {
+            fetchedLimitByID[limit.id] = limit
+        }
         for (id, pendingLimit) in Array(pendingLimitUpserts) {
             if let fetchedLimit = fetchedLimitByID[id], fetchedLimit.updatedAt >= pendingLimit.updatedAt {
                 pendingLimitUpserts.removeValue(forKey: id)
             }
         }
 
-        var visible = fetchedLimits.filter { !pendingLimitDeletes.contains($0.id) }
+        var visible = uniqueFetchedLimits.filter { !pendingLimitDeletes.contains($0.id) }
         for pendingLimit in pendingLimitUpserts.values {
             visible.removeAll { $0.id == pendingLimit.id }
             visible.append(pendingLimit)
         }
         return visible.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func uniqueLatestLimits(_ limits: [AppLimitPolicy]) -> [AppLimitPolicy] {
+        var latestByID: [UUID: AppLimitPolicy] = [:]
+        for limit in limits.sorted(by: { $0.updatedAt > $1.updatedAt }) where latestByID[limit.id] == nil {
+            latestByID[limit.id] = limit
+        }
+        return Array(latestByID.values).sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private func mergedTimeRequests(from requests: [AppTimeRequest]) -> [AppTimeRequest] {
@@ -1387,16 +1676,6 @@ final class BlockingManager: ObservableObject {
         )
     }
 
-    private func applyShielding(for limit: AppLimitPolicy?) {
-        guard let limit, isAuthorized else {
-            blockingStore.shield.applications = nil
-            blockingStore.shield.webDomains = nil
-            return
-        }
-        blockingStore.shield.applications = limit.selection.applicationTokens.isEmpty ? nil : limit.selection.applicationTokens
-        blockingStore.shield.webDomains = limit.selection.webDomainTokens.isEmpty ? nil : limit.selection.webDomainTokens
-    }
-
     private func startAutoRefresh() {
         refreshTimer = Timer.publish(every: 3, on: .main, in: .common)
             .autoconnect()
@@ -1516,6 +1795,7 @@ final class BlockingManager: ObservableObject {
         encode(limits, key: localLimitsKey)
         encode(incomingRequests, key: localIncomingRequestsKey)
         encode(ownRequests, key: localOwnRequestsKey)
+        syncAppBadge()
     }
 
     private func loadLocalState() {
@@ -1532,9 +1812,18 @@ final class BlockingManager: ObservableObject {
         friends = decode([FriendProfile].self, key: localFriendsKey) ?? friends
         incomingFriendRequests = decode([FriendConnection].self, key: localIncomingFriendRequestsKey) ?? []
         outgoingFriendRequests = decode([FriendConnection].self, key: localOutgoingFriendRequestsKey) ?? []
-        limits = decode([AppLimitPolicy].self, key: localLimitsKey) ?? []
-        incomingRequests = decode([AppTimeRequest].self, key: localIncomingRequestsKey) ?? []
-        ownRequests = decode([AppTimeRequest].self, key: localOwnRequestsKey) ?? []
+        limits = uniqueLatestLimits((decode([AppLimitPolicy].self, key: localLimitsKey) ?? []).filter { !isSchemaLimit($0) })
+        incomingRequests = uniqueLatestTimeRequests((decode([AppTimeRequest].self, key: localIncomingRequestsKey) ?? []).filter { !isSchemaTimeRequest($0) })
+        ownRequests = uniqueLatestTimeRequests((decode([AppTimeRequest].self, key: localOwnRequestsKey) ?? []).filter { !isSchemaTimeRequest($0) })
+        syncAppBadge()
+    }
+
+    private func uniqueLatestTimeRequests(_ requests: [AppTimeRequest]) -> [AppTimeRequest] {
+        var latestByID: [UUID: AppTimeRequest] = [:]
+        for request in requests.sorted(by: { $0.updatedAt > $1.updatedAt }) where latestByID[request.id] == nil {
+            latestByID[request.id] = request
+        }
+        return Array(latestByID.values).sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private func encode<T: Encodable>(_ value: T, key: String) {

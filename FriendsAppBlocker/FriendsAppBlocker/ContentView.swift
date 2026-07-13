@@ -6,6 +6,7 @@ import UIKit
 struct ContentView: View {
     @StateObject private var blockingManager = BlockingManager.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @AppStorage("appAppearance") private var appAppearanceRaw = AppAppearance.system.rawValue
     @AppStorage("appLanguage") private var appLanguageRaw = AppLanguage.enUS.rawValue
 
@@ -421,6 +422,16 @@ struct ContentView: View {
                 sectionTitle("App", icon: "info.circle.fill")
                 Text("Version 1.0")
                     .font(Theme.Font.body())
+
+                Button {
+                    if let url = URL(string: "https://www.paypal.com/pool/9qSp2qBQ0Y?sr=wccr") {
+                        openURL(url)
+                    }
+                } label: {
+                    Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
             }
             .sectionPanel()
 
@@ -587,7 +598,8 @@ struct ContentView: View {
     }
 
     private func limitRow(_ limit: AppLimitPolicy) -> some View {
-        Button {
+        let timeStatus = blockingManager.timeStatus(for: limit)
+        return Button {
             draftLimit = limit
             showingLimitEditor = true
             Task { await blockingManager.refreshRemoteChanges() }
@@ -601,9 +613,34 @@ struct ContentView: View {
                     Image(systemName: "chevron.right")
                         .foregroundStyle(Theme.textSecondary)
                 }
-                Text("\(limit.minutes) min • \(limit.mode.title)")
-                    .font(Theme.Font.caption())
-                    .foregroundStyle(Theme.textSecondary)
+
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("\(timeStatus.totalAvailableMinutes)")
+                            .font(Theme.Font.title(28))
+                            .foregroundStyle(Theme.accent)
+                        Text("min configured")
+                            .font(Theme.Font.caption())
+                            .foregroundStyle(Theme.textSecondary)
+                        Spacer()
+                        Text("Screen Time active")
+                            .font(Theme.Font.caption())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+
+                HStack {
+                    Text("\(limit.minutes) min limit")
+                    Text("•")
+                    Text(limit.mode.title)
+                    if timeStatus.approvedExtraMinutes > 0 {
+                        Text("•")
+                        Text("+\(timeStatus.approvedExtraMinutes) approved")
+                    }
+                }
+                .font(Theme.Font.caption())
+                .foregroundStyle(Theme.textSecondary)
+
                 Text("\(limit.approverIDs.count) approver(s)")
                     .font(Theme.Font.caption())
                     .foregroundStyle(Theme.textSecondary)
