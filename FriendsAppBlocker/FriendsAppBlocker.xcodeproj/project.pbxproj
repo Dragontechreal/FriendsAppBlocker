@@ -22,7 +22,7 @@
 /* Begin PBXBuildFile section */
 		F448D87930060000003997F6 /* BoundDeviceActivityMonitor.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F448D87830060000003997F6 /* BoundDeviceActivityMonitor.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F448D88930060000003997F6 /* BoundDeviceActivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448D88630060000003997F6 /* BoundDeviceActivityMonitor.swift */; };
-		F448D89430070000003997F6 /* BoundActivityReport.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F448D89030070000003997F6 /* BoundActivityReport.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F448D89430070000003997F6 /* BoundActivityReport.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F448D89030070000003997F6 /* BoundActivityReport.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F448D89530070000003997F6 /* BoundActivityReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448D89130070000003997F6 /* BoundActivityReport.swift */; };
 /* End PBXBuildFile section */
 
@@ -51,9 +51,19 @@
 			dstSubfolderSpec = 13;
 			files = (
 				F448D87930060000003997F6 /* BoundDeviceActivityMonitor.appex in Embed App Extensions */,
-				F448D89430070000003997F6 /* BoundActivityReport.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F448D8A030080000003997F6 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Extensions";
+			dstSubfolderSpec = 16;
+			files = (
+				F448D89430070000003997F6 /* BoundActivityReport.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -143,6 +153,7 @@
 				F4A2748F2FFC2D370056EDA1 /* Frameworks */,
 				F4A274902FFC2D370056EDA1 /* Resources */,
 				F448D87B30060000003997F6 /* Embed App Extensions */,
+				F448D8A030080000003997F6 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
@@ -196,7 +207,7 @@
 			);
 			productName = BoundActivityReport;
 			productReference = F448D89030070000003997F6 /* BoundActivityReport.appex */;
-			productType = "com.apple.product-type.app-extension";
+			productType = "com.apple.product-type.extensionkit-extension";
 		};
 /* End PBXNativeTarget section */
 
