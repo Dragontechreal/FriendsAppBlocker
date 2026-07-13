@@ -5,6 +5,7 @@ import ManagedSettings
 import AuthenticationServices
 import CloudKit
 import UserNotifications
+import UIKit
 
 struct FriendProfile: Identifiable, Codable, Hashable {
     var id: String { appUserID }
@@ -134,12 +135,14 @@ final class BlockingManager: ObservableObject {
     @Published var authError: String?
     @Published var infoMessage: String?
     @Published var needsDisplayName = false
+    @Published var devDiagnostics = "No diagnostics yet."
 
     private let appContainerIdentifier = "iCloud.dev.supremezone.friendsappblock"
     private let profileRecordType = "UserProfile"
     private let friendshipRecordType = "Friendship"
     private let limitRecordType = "LimitPolicy"
     private let timeRequestRecordType = "TimeRequest"
+    private let cloudKitSubscriptionVersion = "v3"
     private let currentUserIdentifierKey = "currentUserIdentifier"
     private let currentAppUserIDKey = "currentAppUserID"
     private let currentUserDisplayNameKey = "currentUserDisplayName"
@@ -154,6 +157,11 @@ final class BlockingManager: ObservableObject {
     private var refreshTimer: AnyCancellable?
     private var isRefreshing = false
     private var needsRefreshAfterCurrent = false
+    private var pendingFriendStateByPair: [String: FriendConnection] = [:]
+    private var pendingLimitUpserts: [UUID: AppLimitPolicy] = [:]
+    private var pendingLimitDeletes: Set<UUID> = []
+    private var pendingTimeRequests: [UUID: AppTimeRequest] = [:]
+    private var pendingTimeResponses: [UUID: AppTimeRequest] = [:]
 
     private var privateDatabase: CKDatabase {
         CKContainer(identifier: appContainerIdentifier).privateCloudDatabase
@@ -313,11 +321,13 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        var previousOutgoing: [FriendConnection]?
         do {
             guard let profile = try await fetchPublicProfile(appUserID: friendID) else {
                 authError = "No user found for \(friendID)."
                 return
             }
+            previousOutgoing = outgoingFriendRequests
             let connection = FriendConnection(
                 id: friendPendingRequestID(to: profile.appUserID),
                 userIDs: [currentAppUserID, profile.appUserID].sorted(),
@@ -332,10 +342,19 @@ final class BlockingManager: ObservableObject {
             )
             let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: connection.id))
             write(connection, to: record)
+            pendingFriendStateByPair[friendshipPairKey(connection.userIDs)] = connection
+            outgoingFriendRequests.removeAll { friendshipPairKey($0.userIDs) == friendshipPairKey(connection.userIDs) }
+            outgoingFriendRequests.insert(connection, at: 0)
+            saveLocalState()
             _ = try await publicDatabase.save(record)
             await loadFriendState()
             infoMessage = "Friend request sent to \(profile.displayName)."
         } catch {
+            pendingFriendStateByPair.removeValue(forKey: friendshipPairKey([currentAppUserID, friendID]))
+            if let previousOutgoing {
+                outgoingFriendRequests = previousOutgoing
+            }
+            saveLocalState()
             setCloudError(error, context: "add friend")
         }
     }
@@ -362,14 +381,31 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        let previousFriends = friends
+        let previousIncoming = incomingFriendRequests
+        let previousOutgoing = outgoingFriendRequests
+        let pairKey = friendshipPairKey(request.userIDs)
+        incomingFriendRequests.removeAll { $0.id == request.id || friendshipPairKey($0.userIDs) == friendshipPairKey(request.userIDs) }
+        outgoingFriendRequests.removeAll { $0.id == request.id || friendshipPairKey($0.userIDs) == friendshipPairKey(request.userIDs) }
+        if accepted, let friend = updated.friend(for: currentAppUserID), !friends.contains(friend) {
+            friends.insert(friend, at: 0)
+        }
+        saveLocalState()
+
         do {
             updated.id = friendResponseID(for: request, accepted: accepted)
             updated.createdAt = Date()
+            pendingFriendStateByPair[pairKey] = updated
             let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: updated.id))
             write(updated, to: record)
             _ = try await publicDatabase.save(record)
             await loadFriendState()
         } catch {
+            pendingFriendStateByPair.removeValue(forKey: pairKey)
+            friends = previousFriends
+            incomingFriendRequests = previousIncoming
+            outgoingFriendRequests = previousOutgoing
+            saveLocalState()
             setCloudError(error, context: accepted ? "accept friend request" : "decline friend request")
         }
     }
@@ -380,6 +416,11 @@ final class BlockingManager: ObservableObject {
             saveLocalState()
             return
         }
+
+        let previousFriends = friends
+        let pairKey = friendshipPairKey([currentAppUserID, friend.appUserID])
+        friends.removeAll { $0.appUserID == friend.appUserID }
+        saveLocalState()
 
         do {
             let connection = FriendConnection(
@@ -394,11 +435,15 @@ final class BlockingManager: ObservableObject {
                 status: .declined,
                 createdAt: Date()
             )
+            pendingFriendStateByPair[pairKey] = connection
             let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: connection.id))
             write(connection, to: record)
             _ = try await publicDatabase.save(record)
             await loadFriendState()
         } catch {
+            pendingFriendStateByPair.removeValue(forKey: pairKey)
+            friends = previousFriends
+            saveLocalState()
             setCloudError(error, context: "remove friend")
         }
     }
@@ -416,6 +461,13 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        let previousLimits = limits
+        pendingLimitDeletes.remove(updated.id)
+        pendingLimitUpserts[updated.id] = updated
+        limits.removeAll { $0.id == updated.id }
+        limits.insert(updated, at: 0)
+        saveLocalState()
+
         do {
             let record = CKRecord(recordType: limitRecordType, recordID: CKRecord.ID(recordName: limitRecordName(updated.id)))
             write(updated, to: record)
@@ -424,6 +476,9 @@ final class BlockingManager: ObservableObject {
             await loadOwnTimeRequests()
             await notifyLimitApprovers(updated)
         } catch {
+            pendingLimitUpserts.removeValue(forKey: updated.id)
+            limits = previousLimits
+            saveLocalState()
             setCloudError(error, context: "save limit")
         }
     }
@@ -435,11 +490,20 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        let previousLimits = limits
+        pendingLimitUpserts.removeValue(forKey: limit.id)
+        pendingLimitDeletes.insert(limit.id)
+        limits.removeAll { $0.id == limit.id }
+        saveLocalState()
+
         do {
             _ = try await publicDatabase.deleteRecord(withID: CKRecord.ID(recordName: limitRecordName(limit.id)))
             await loadLimits()
             await loadOwnTimeRequests()
         } catch {
+            pendingLimitDeletes.remove(limit.id)
+            limits = previousLimits
+            saveLocalState()
             setCloudError(error, context: "delete limit")
         }
     }
@@ -477,6 +541,15 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        let previousOwnRequests = ownRequests
+        let previousIncomingRequests = incomingRequests
+        pendingTimeRequests[request.id] = request
+        ownRequests.insert(request, at: 0)
+        if request.approverIDs.contains(currentAppUserID) {
+            incomingRequests.insert(request, at: 0)
+        }
+        saveLocalState()
+
         do {
             let record = CKRecord(recordType: timeRequestRecordType, recordID: CKRecord.ID(recordName: timeRequestRecordName(request.id)))
             write(request, to: record)
@@ -484,6 +557,10 @@ final class BlockingManager: ObservableObject {
             await loadOwnTimeRequests()
             await loadIncomingTimeRequests()
         } catch {
+            pendingTimeRequests.removeValue(forKey: request.id)
+            ownRequests = previousOwnRequests
+            incomingRequests = previousIncomingRequests
+            saveLocalState()
             setCloudError(error, context: "request more time")
         }
     }
@@ -506,6 +583,7 @@ final class BlockingManager: ObservableObject {
             return
         }
 
+        pendingTimeResponses[originalRequestID] = response
         updateLocalResolvedRequest(originalRequestID: originalRequestID, response: response)
 
         do {
@@ -516,9 +594,11 @@ final class BlockingManager: ObservableObject {
             removeNotification(for: request)
             await refreshRemoteChanges()
         } catch {
+            pendingTimeResponses.removeValue(forKey: originalRequestID)
             incomingRequests.removeAll { $0.id == response.id || $0.responseToRequestID == originalRequestID }
             ownRequests.removeAll { $0.id == response.id || $0.responseToRequestID == originalRequestID }
             updateLocalRequest(request)
+            saveLocalState()
             setCloudError(error, context: "resolve request")
         }
     }
@@ -648,8 +728,164 @@ final class BlockingManager: ObservableObject {
         await refreshAll()
     }
 
+    func configureNotificationsForDiagnostics() async {
+        await configureNotifications()
+        await loadNotificationDiagnostics()
+    }
+
+    func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) async {
+        let notification = CKNotification(fromRemoteNotificationDictionary: userInfo)
+        let type = notification?.subscriptionID ?? "unknown subscription"
+        devDiagnostics = "Remote notification received: \(type)\nRefreshing data..."
+        await refreshRemoteChanges()
+    }
+
+    func updateRemoteNotificationRegistration(success: Bool, detail: String) {
+        let status = success ? "Remote notification registration OK" : "Remote notification registration failed"
+        devDiagnostics = "\(status)\n\(detail)"
+        if !success {
+            authError = devDiagnostics
+        }
+    }
+
+    func scheduleLocalNotificationTest() async {
+        do {
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
+            guard granted else {
+                devDiagnostics = "Local notification test failed: notification permission was denied."
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = "Bound"
+            content.body = "Local notification test works."
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "Bound_local_notification_test",
+                content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 2, repeats: false)
+            )
+            try await UNUserNotificationCenter.current().add(request)
+            devDiagnostics = "Local notification scheduled. It should appear in about 2 seconds."
+        } catch {
+            devDiagnostics = "Local notification test failed: \(error.localizedDescription)"
+            authError = devDiagnostics
+        }
+    }
+
+    func createDevelopmentTimeRequestPushTest() async {
+        guard isAuthenticated, !isDeveloperSession else {
+            devDiagnostics = "Use Apple sign-in, not Development login, for CloudKit push tests."
+            return
+        }
+        let request = AppTimeRequest(
+            id: UUID(),
+            responseToRequestID: nil,
+            requesterID: currentAppUserID,
+            requesterName: "\(currentUserDisplayName) Push Test",
+            limitID: UUID(),
+            limitTitle: "Push test time request",
+            approverIDs: [currentAppUserID],
+            requestedMinutes: 5,
+            status: .open,
+            resolvedByID: nil,
+            resolvedByName: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+
+        do {
+            await configureNotifications()
+            let record = CKRecord(recordType: timeRequestRecordType, recordID: CKRecord.ID(recordName: timeRequestRecordName(request.id)))
+            write(request, to: record)
+            _ = try await publicDatabase.save(record)
+            await loadIncomingTimeRequests()
+            let matches = await timeRequestSubscriptionMatches(recordName: record.recordID.recordName)
+            devDiagnostics = [
+                "Created TimeRequest push test record.",
+                "Record: \(record.recordID.recordName)",
+                "Subscription predicate match: \(matches ? "yes" : "no")",
+                "Important: CloudKit does not reliably send query-subscription pushes back to the same user/device that created the record. Use this to verify schema/predicate/save. For a real remote push test, create the request from a second Apple ID/device."
+            ].joined(separator: "\n")
+        } catch {
+            devDiagnostics = "TimeRequest push test failed:\n\(shortCloudDiagnostic(error))"
+            setCloudError(error, context: "create time request push test")
+        }
+    }
+
+    func createDevelopmentFriendRequestPushTest() async {
+        guard isAuthenticated, !isDeveloperSession else {
+            devDiagnostics = "Use Apple sign-in, not Development login, for CloudKit push tests."
+            return
+        }
+        let senderID = "SCHEMA-PUSH-SENDER"
+        let connection = FriendConnection(
+            id: "friendship_push_test_\(UUID().uuidString)",
+            userIDs: [currentAppUserID, senderID].sorted(),
+            displayNames: [
+                currentAppUserID: currentUserDisplayName,
+                senderID: "Push Test"
+            ],
+            requestedByID: senderID,
+            requestedToID: currentAppUserID,
+            status: .pending,
+            createdAt: Date()
+        )
+
+        do {
+            await configureNotifications()
+            let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: connection.id))
+            write(connection, to: record)
+            _ = try await publicDatabase.save(record)
+            let matches = await friendRequestSubscriptionMatches(recordName: record.recordID.recordName)
+            devDiagnostics = [
+                "Created FriendRequest push test record.",
+                "Record: \(record.recordID.recordName)",
+                "Subscription predicate match: \(matches ? "yes" : "no")",
+                "It is hidden from the friend list because it uses a SCHEMA test user.",
+                "Important: CloudKit does not reliably send query-subscription pushes back to the same user/device that created the record. Use a second Apple ID/device for the real push test."
+            ].joined(separator: "\n")
+        } catch {
+            devDiagnostics = "FriendRequest push test failed:\n\(shortCloudDiagnostic(error))"
+            setCloudError(error, context: "create friend request push test")
+        }
+    }
+
+    func loadNotificationDiagnostics() async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        var lines = [
+            "Notifications:",
+            "Authorization: \(notificationAuthorizationDescription(settings.authorizationStatus))",
+            "Alert: \(notificationSettingDescription(settings.alertSetting))",
+            "Sound: \(notificationSettingDescription(settings.soundSetting))",
+            "Badge: \(notificationSettingDescription(settings.badgeSetting))"
+        ]
+
+        do {
+            let subscriptions = try await publicDatabase.allSubscriptions()
+            lines.append("CloudKit subscriptions: \(subscriptions.count)")
+            lines.append(contentsOf: subscriptions.map { "- \($0.subscriptionID)" }.sorted())
+            lines.append("Expected active subscriptions:")
+            lines.append("- \(timeRequestSubscriptionID)")
+            lines.append("- \(friendRequestSubscriptionID)")
+        } catch {
+            lines.append("CloudKit subscription check failed: \(shortCloudDiagnostic(error))")
+        }
+
+        devDiagnostics = lines.joined(separator: "\n")
+    }
+
     private func configureNotifications() async {
-        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
+        do {
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
+            if granted {
+                UIApplication.shared.registerForRemoteNotifications()
+            } else {
+                devDiagnostics = "Notification permission denied. CloudKit can create subscriptions, but APNs alerts will not be shown."
+            }
+        } catch {
+            devDiagnostics = "Notification authorization failed: \(error.localizedDescription)"
+        }
         await saveSubscriptions()
     }
 
@@ -659,7 +895,7 @@ final class BlockingManager: ObservableObject {
         let timeSubscription = CKQuerySubscription(
             recordType: timeRequestRecordType,
             predicate: timePredicate,
-            subscriptionID: "time_requests_\(currentAppUserID)",
+            subscriptionID: timeRequestSubscriptionID,
             options: [.firesOnRecordCreation, .firesOnRecordUpdate]
         )
 
@@ -667,32 +903,77 @@ final class BlockingManager: ObservableObject {
         let friendSubscription = CKQuerySubscription(
             recordType: friendshipRecordType,
             predicate: friendPredicate,
-            subscriptionID: "friend_requests_\(currentAppUserID)",
+            subscriptionID: friendRequestSubscriptionID,
             options: [.firesOnRecordCreation, .firesOnRecordUpdate]
         )
 
         timeSubscription.notificationInfo = notificationInfo(body: "A friend requested more time.")
         friendSubscription.notificationInfo = notificationInfo(body: "Someone sent you a friend request.")
 
-        var errors: [String] = []
-        for (name, subscription) in [("time requests", timeSubscription), ("friend requests", friendSubscription)] {
-            do {
-                _ = try await publicDatabase.save(subscription)
-            } catch {
-                errors.append("\(name): \(shortCloudDiagnostic(error))")
-            }
-        }
+        let staleIDs = [
+            "time_requests_\(currentAppUserID)",
+            "friend_requests_\(currentAppUserID)",
+            "time_requests_\(currentAppUserID)_v2",
+            "friend_requests_\(currentAppUserID)_v2"
+        ]
+        let existingIDs = (try? await publicDatabase.allSubscriptions().map(\.subscriptionID)) ?? []
+        let existingIDSet = Set(existingIDs)
+        let errors = await replaceSubscriptions([timeSubscription, friendSubscription], deleting: staleIDs.filter { existingIDSet.contains($0) })
         if !errors.isEmpty {
             infoMessage = "Notification subscription issue:\n\(errors.joined(separator: "\n"))"
         }
     }
 
+    private var timeRequestSubscriptionID: String {
+        "time_requests_\(currentAppUserID)_\(cloudKitSubscriptionVersion)"
+    }
+
+    private var friendRequestSubscriptionID: String {
+        "friend_requests_\(currentAppUserID)_\(cloudKitSubscriptionVersion)"
+    }
+
+    private func replaceSubscriptions(_ subscriptions: [CKSubscription], deleting staleIDs: [String]) async -> [String] {
+        await withCheckedContinuation { continuation in
+            let operation = CKModifySubscriptionsOperation(subscriptionsToSave: subscriptions, subscriptionIDsToDelete: staleIDs)
+            operation.modifySubscriptionsResultBlock = { result in
+                switch result {
+                case .success:
+                    continuation.resume(returning: [])
+                case .failure(let error):
+                    continuation.resume(returning: ["subscriptions: \(self.shortCloudDiagnostic(error))"])
+                }
+            }
+            publicDatabase.add(operation)
+        }
+    }
+
+    private func timeRequestSubscriptionMatches(recordName: String) async -> Bool {
+        do {
+            let record = try await publicDatabase.record(for: CKRecord.ID(recordName: recordName))
+            guard let request = readTimeRequest(from: record) else { return false }
+            return request.status == .open && request.approverIDs.contains(currentAppUserID)
+        } catch {
+            return false
+        }
+    }
+
+    private func friendRequestSubscriptionMatches(recordName: String) async -> Bool {
+        do {
+            let record = try await publicDatabase.record(for: CKRecord.ID(recordName: recordName))
+            guard let connection = readFriendship(from: record) else { return false }
+            return connection.status == .pending && connection.requestedToID == currentAppUserID
+        } catch {
+            return false
+        }
+    }
+
     private func notificationInfo(body: String) -> CKSubscription.NotificationInfo {
         let info = CKSubscription.NotificationInfo()
-        info.title = "bound"
+        info.title = "Bound"
         info.alertBody = body
         info.soundName = "default"
         info.shouldBadge = true
+        info.shouldSendContentAvailable = true
         return info
     }
 
@@ -762,11 +1043,12 @@ final class BlockingManager: ObservableObject {
                 return connection
             }
             .filter { !isSchemaFriendship($0) }
-            friends = visibleAcceptedFriendships(from: connections)
+            let visibleConnections = friendshipConnectionsWithPendingOverlay(connections)
+            friends = visibleAcceptedFriendships(from: visibleConnections)
                 .compactMap { $0.friend(for: currentAppUserID) }
             .filter { !isSchemaUserID($0.appUserID) }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-            let pending = latestFriendshipByPair(from: connections).values.filter { $0.status == .pending }
+            let pending = latestFriendshipByPair(from: visibleConnections).values.filter { $0.status == .pending }
             incomingFriendRequests = pending
                 .filter { $0.requestedToID == currentAppUserID }
                 .sorted { $0.createdAt > $1.createdAt }
@@ -787,10 +1069,11 @@ final class BlockingManager: ObservableObject {
         query.sortDescriptors = [NSSortDescriptor(key: "updatedAt", ascending: false)]
         do {
             let (results, _) = try await publicDatabase.records(matching: query)
-            limits = results.compactMap { result in
+            let fetchedLimits: [AppLimitPolicy] = results.compactMap { result in
                 guard case .success(let record) = result.1 else { return nil }
                 return readLimit(from: record)
             }
+            limits = limitsWithPendingOverlay(fetchedLimits)
             saveLocalState()
         } catch {
             if !isMissingCloudSchema(error) {
@@ -809,7 +1092,7 @@ final class BlockingManager: ObservableObject {
                 guard case .success(let record) = result.1 else { return nil }
                 return readTimeRequest(from: record)
             }
-            incomingRequests = mergedTimeRequests(from: requests)
+            incomingRequests = timeRequestsWithPendingOverlay(mergedTimeRequests(from: requests), includeIncoming: true)
             removeResolvedNotifications()
             saveLocalState()
         } catch {
@@ -829,7 +1112,7 @@ final class BlockingManager: ObservableObject {
                 guard case .success(let record) = result.1 else { return nil }
                 return readTimeRequest(from: record)
             }
-            ownRequests = mergedTimeRequests(from: requests)
+            ownRequests = timeRequestsWithPendingOverlay(mergedTimeRequests(from: requests), includeIncoming: false)
             saveLocalState()
         } catch {
             if !isMissingCloudSchema(error) {
@@ -884,6 +1167,18 @@ final class BlockingManager: ObservableObject {
         latestFriendshipByPair(from: connections).values.filter { $0.status == .accepted }
     }
 
+    private func friendshipConnectionsWithPendingOverlay(_ connections: [FriendConnection]) -> [FriendConnection] {
+        var latestByPair = latestFriendshipByPair(from: connections)
+        for (pairKey, pendingConnection) in Array(pendingFriendStateByPair) {
+            if latestByPair[pairKey]?.id == pendingConnection.id {
+                pendingFriendStateByPair.removeValue(forKey: pairKey)
+            } else {
+                latestByPair[pairKey] = pendingConnection
+            }
+        }
+        return Array(latestByPair.values)
+    }
+
     private func latestFriendshipByPair(from connections: [FriendConnection]) -> [String: FriendConnection] {
         let sorted = connections.sorted { $0.createdAt > $1.createdAt }
         var latestByPair: [String: FriendConnection] = [:]
@@ -891,6 +1186,26 @@ final class BlockingManager: ObservableObject {
             latestByPair[friendshipPairKey(connection.userIDs)] = connection
         }
         return latestByPair
+    }
+
+    private func limitsWithPendingOverlay(_ fetchedLimits: [AppLimitPolicy]) -> [AppLimitPolicy] {
+        let fetchedIDs = Set(fetchedLimits.map(\.id))
+        for id in Array(pendingLimitDeletes) where !fetchedIDs.contains(id) {
+            pendingLimitDeletes.remove(id)
+        }
+        let fetchedLimitByID = Dictionary(uniqueKeysWithValues: fetchedLimits.map { ($0.id, $0) })
+        for (id, pendingLimit) in Array(pendingLimitUpserts) {
+            if let fetchedLimit = fetchedLimitByID[id], fetchedLimit.updatedAt >= pendingLimit.updatedAt {
+                pendingLimitUpserts.removeValue(forKey: id)
+            }
+        }
+
+        var visible = fetchedLimits.filter { !pendingLimitDeletes.contains($0.id) }
+        for pendingLimit in pendingLimitUpserts.values {
+            visible.removeAll { $0.id == pendingLimit.id }
+            visible.append(pendingLimit)
+        }
+        return visible.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private func mergedTimeRequests(from requests: [AppTimeRequest]) -> [AppTimeRequest] {
@@ -912,6 +1227,36 @@ final class BlockingManager: ObservableObject {
             return !originalIDs.contains(originalID)
         })
         return merged.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func timeRequestsWithPendingOverlay(_ fetchedRequests: [AppTimeRequest], includeIncoming: Bool) -> [AppTimeRequest] {
+        let fetchedIDs = Set(fetchedRequests.map(\.id))
+        let fetchedResponseOriginalIDs = Set(fetchedRequests.compactMap(\.responseToRequestID))
+
+        for id in Array(pendingTimeRequests.keys) where fetchedIDs.contains(id) {
+            pendingTimeRequests.removeValue(forKey: id)
+        }
+        for originalID in Array(pendingTimeResponses.keys) where fetchedResponseOriginalIDs.contains(originalID) {
+            pendingTimeResponses.removeValue(forKey: originalID)
+        }
+
+        var visible = fetchedRequests
+        for pendingRequest in pendingTimeRequests.values where shouldShowPendingTimeRequest(pendingRequest, includeIncoming: includeIncoming) {
+            visible.removeAll { $0.id == pendingRequest.id }
+            visible.append(pendingRequest)
+        }
+        for (originalID, pendingResponse) in pendingTimeResponses where shouldShowPendingTimeRequest(pendingResponse, includeIncoming: includeIncoming) {
+            visible.removeAll { $0.id == originalID || $0.responseToRequestID == originalID }
+            visible.append(pendingResponse)
+        }
+        return visible.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func shouldShowPendingTimeRequest(_ request: AppTimeRequest, includeIncoming: Bool) -> Bool {
+        if includeIncoming {
+            return request.approverIDs.contains(currentAppUserID)
+        }
+        return request.requesterID == currentAppUserID
     }
 
     private func write(_ connection: FriendConnection, to record: CKRecord) {
@@ -1053,7 +1398,7 @@ final class BlockingManager: ObservableObject {
     }
 
     private func startAutoRefresh() {
-        refreshTimer = Timer.publish(every: 12, on: .main, in: .common)
+        refreshTimer = Timer.publish(every: 3, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 Task { await self?.refreshRemoteChanges() }
@@ -1133,6 +1478,26 @@ final class BlockingManager: ObservableObject {
             return error.localizedDescription
         }
         return "\(cloudError.code.rawValue) (\(cloudError.code)): \(cloudError.localizedDescription)"
+    }
+
+    private func notificationAuthorizationDescription(_ status: UNAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "not determined"
+        case .denied: return "denied"
+        case .authorized: return "authorized"
+        case .provisional: return "provisional"
+        case .ephemeral: return "ephemeral"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private func notificationSettingDescription(_ setting: UNNotificationSetting) -> String {
+        switch setting {
+        case .notSupported: return "not supported"
+        case .disabled: return "disabled"
+        case .enabled: return "enabled"
+        @unknown default: return "unknown"
+        }
     }
 
     private func isMissingCloudSchema(_ error: Error) -> Bool {

@@ -32,6 +32,9 @@ struct ContentView: View {
         case request
         case approvals
         case settings
+        #if DEBUG
+        case dev
+        #endif
     }
 
     private var appAppearance: AppAppearance {
@@ -113,6 +116,12 @@ struct ContentView: View {
             settingsPage
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
+
+            #if DEBUG
+            devPage
+                .tabItem { Label("Dev", systemImage: "hammer.fill") }
+                .tag(AppTab.dev)
+            #endif
         }
         .tint(Theme.accent)
     }
@@ -122,7 +131,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 Spacer(minLength: 32)
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text("bound")
+                    Text("Bound")
                         .font(Theme.Font.title(42))
                         .foregroundStyle(Theme.textPrimary)
                     Text("Set app limits for yourself and let trusted friends approve extra time.")
@@ -409,19 +418,9 @@ struct ContentView: View {
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Diagnostics", icon: "icloud.fill")
+                sectionTitle("App", icon: "info.circle.fill")
                 Text("Version 1.0")
                     .font(Theme.Font.body())
-                Button {
-                    Task { await blockingManager.registerCloudSchemaForDevelopment() }
-                } label: {
-                    Label("Seed Development CloudKit schema", systemImage: "wand.and.stars")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryPillButtonStyle())
-                Text("Run this from an Xcode Development build after deleting CloudKit schema, then deploy Development schema to Production for TestFlight.")
-                    .font(Theme.Font.caption())
-                    .foregroundStyle(Theme.textSecondary)
             }
             .sectionPanel()
 
@@ -436,6 +435,97 @@ struct ContentView: View {
             statusMessages
         }
     }
+
+    #if DEBUG
+    private var devPage: some View {
+        page {
+            header("Dev", "Debug-only checks for CloudKit, push notifications, schema, and refresh.")
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                sectionTitle("CloudKit schema", icon: "icloud.and.arrow.up.fill")
+                Button {
+                    Task { await blockingManager.registerCloudSchemaForDevelopment() }
+                } label: {
+                    Label("Seed Development CloudKit schema", systemImage: "wand.and.stars")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
+                Text("Run this from an Xcode Development build after deleting CloudKit schema, then deploy Development schema to Production for TestFlight.")
+                    .font(Theme.Font.caption())
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .sectionPanel()
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                sectionTitle("Push notifications", icon: "bell.badge.fill")
+                Button {
+                    Task { await blockingManager.configureNotificationsForDiagnostics() }
+                } label: {
+                    Label("Register APNs + check subscriptions", systemImage: "antenna.radiowaves.left.and.right")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryPillButtonStyle())
+
+                Button {
+                    Task { await blockingManager.scheduleLocalNotificationTest() }
+                } label: {
+                    Label("Test local notification", systemImage: "bell.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
+
+                Button {
+                    Task { await blockingManager.createDevelopmentTimeRequestPushTest() }
+                } label: {
+                    Label("Create time request push test", systemImage: "hourglass.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
+
+                Button {
+                    Task { await blockingManager.createDevelopmentFriendRequestPushTest() }
+                } label: {
+                    Label("Create friend request push test", systemImage: "person.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
+            }
+            .sectionPanel()
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                sectionTitle("Refresh", icon: "arrow.clockwise")
+                Button {
+                    Task { await blockingManager.refreshRemoteChanges() }
+                } label: {
+                    Label("Refresh now", systemImage: "arrow.clockwise.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryPillButtonStyle())
+
+                Button {
+                    Task { await blockingManager.loadNotificationDiagnostics() }
+                } label: {
+                    Label("Reload diagnostics", systemImage: "list.bullet.clipboard.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryPillButtonStyle())
+            }
+            .sectionPanel()
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                sectionTitle("Diagnostics output", icon: "stethoscope")
+                Text(blockingManager.devDiagnostics)
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .sectionPanel()
+
+            statusMessages
+        }
+    }
+    #endif
 
     private var limitEditor: some View {
         NavigationStack {
@@ -944,6 +1034,8 @@ private struct IconCircleButtonStyle: ButtonStyle {
     }
 }
 
+#if !CODEX_TYPECHECK
 #Preview {
     ContentView()
 }
+#endif
