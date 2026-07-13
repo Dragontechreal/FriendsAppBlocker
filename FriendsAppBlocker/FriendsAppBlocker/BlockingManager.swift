@@ -520,7 +520,10 @@ final class BlockingManager: ObservableObject {
         saveLocalState()
 
         do {
-            let record = CKRecord(recordType: limitRecordType, recordID: CKRecord.ID(recordName: limitRecordName(updated.id)))
+            let record = await existingOrNewPublicRecord(
+                recordType: limitRecordType,
+                recordName: limitRecordName(updated.id)
+            )
             write(updated, to: record)
             _ = try await publicDatabase.save(record)
             await loadLimits()

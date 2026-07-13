@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var selectedRequestLimitID: UUID?
     @State private var showingPicker = false
     @State private var showingLimitEditor = false
+    @State private var showingDeleteLimitConfirmation = false
     @State private var draftLimit = AppLimitPolicy.empty(ownerID: "", ownerName: "")
     @State private var profileNameDraft = ""
     @State private var editingProfileName = false
@@ -579,6 +580,20 @@ struct ContentView: View {
                         }
                     }
                     .sectionPanel()
+
+                    if isEditingExistingLimit {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                            sectionTitle("Delete limit", icon: "trash.fill")
+                            Button(role: .destructive) {
+                                showingDeleteLimitConfirmation = true
+                            } label: {
+                                Label("Delete this limit", systemImage: "trash.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SecondaryPillButtonStyle())
+                        }
+                        .sectionPanel()
+                    }
                 }
                 .padding(Theme.Spacing.md)
             }
@@ -598,7 +613,26 @@ struct ContentView: View {
                     .disabled(draftLimit.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftLimit.approverIDs.isEmpty)
                 }
             }
+            .confirmationDialog(
+                "Delete this limit?",
+                isPresented: $showingDeleteLimitConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete limit", role: .destructive) {
+                    Task {
+                        await blockingManager.deleteLimit(draftLimit)
+                        showingLimitEditor = false
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the limit and stops its Screen Time tracking.")
+            }
         }
+    }
+
+    private var isEditingExistingLimit: Bool {
+        blockingManager.limits.contains { $0.id == draftLimit.id }
     }
 
     private func limitRow(_ limit: AppLimitPolicy) -> some View {
