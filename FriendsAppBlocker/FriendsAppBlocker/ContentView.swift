@@ -6,10 +6,11 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var blockingManager = BlockingManager.shared
+    @StateObject private var localization = LocalizationStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
     @AppStorage("appAppearance") private var appAppearanceRaw = AppAppearance.system.rawValue
-    @AppStorage("appLanguage") private var appLanguageRaw = AppLanguage.enUS.rawValue
+    @AppStorage("appLanguage") private var appLanguageRaw = "en-US"
 
     @State private var selectedTab: AppTab = .request
     @State private var friendCode = ""
@@ -47,10 +48,6 @@ struct ContentView: View {
         AppAppearance(rawValue: appAppearanceRaw) ?? .system
     }
 
-    private var appLanguage: AppLanguage {
-        AppLanguage(rawValue: appLanguageRaw) ?? .enUS
-    }
-
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
@@ -62,6 +59,7 @@ struct ContentView: View {
         }
         .preferredColorScheme(appAppearance.colorScheme)
         .task {
+            normalizeSelectedLanguage()
             if blockingManager.supportsFamilyControls && !blockingManager.isAuthorized {
                 try? await blockingManager.requestAuthorization()
             }
@@ -77,16 +75,19 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, _ in
             Task { await blockingManager.refreshRemoteChanges() }
         }
+        .onChange(of: appLanguageRaw) { _, newValue in
+            localization.loadLanguage(newValue)
+        }
         .sheet(isPresented: $showingPicker, onDismiss: {
             showingLimitEditor = true
         }) {
             NavigationStack {
                 FamilyActivityPicker(selection: $draftLimit.selection)
-                    .navigationTitle("Apps")
+                    .navigationTitle(L("editor.apps", "Apps"))
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") {
+                            Button(L("editor.done", "Done")) {
                                 showingPicker = false
                             }
                         }
@@ -104,28 +105,28 @@ struct ContentView: View {
     private var dashboard: some View {
         TabView(selection: $selectedTab) {
             friendsPage
-                .tabItem { Label("Friends", systemImage: "person.2.fill") }
+                .tabItem { Label(L("tab.friends", "Friends"), systemImage: "person.2.fill") }
                 .tag(AppTab.friends)
 
             limitsPage
-                .tabItem { Label("Limits", systemImage: "hourglass.circle.fill") }
+                .tabItem { Label(L("tab.limits", "Limits"), systemImage: "hourglass.circle.fill") }
                 .tag(AppTab.limits)
 
             requestPage
-                .tabItem { Label("Request", systemImage: "paperplane.fill") }
+                .tabItem { Label(L("tab.request", "Request"), systemImage: "paperplane.fill") }
                 .tag(AppTab.request)
 
             approvalsPage
-                .tabItem { Label("Requests", systemImage: "checkmark.seal.fill") }
+                .tabItem { Label(L("tab.requests", "Requests"), systemImage: "checkmark.seal.fill") }
                 .tag(AppTab.approvals)
 
             settingsPage
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tabItem { Label(L("tab.settings", "Settings"), systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
 
             #if DEBUG
             devPage
-                .tabItem { Label("Dev", systemImage: "hammer.fill") }
+                .tabItem { Label(L("tab.dev", "Dev"), systemImage: "hammer.fill") }
                 .tag(AppTab.dev)
             #endif
         }
@@ -140,7 +141,7 @@ struct ContentView: View {
                     Text("Bound")
                         .font(Theme.Font.title(42))
                         .foregroundStyle(Theme.textPrimary)
-                    Text("Set app limits for yourself and let trusted friends approve extra time.")
+                    Text(L("login.subtitle", "Set app limits for yourself and let trusted friends approve extra time."))
                         .font(Theme.Font.body())
                         .foregroundStyle(Theme.textSecondary)
                 }
@@ -155,14 +156,14 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
 
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text("Development login")
+                    Text(L("login.development", "Development login"))
                         .font(Theme.Font.caption())
                         .foregroundStyle(Theme.textSecondary)
                     HStack {
                         Button {
                             blockingManager.signInForDevelopment(asOwner: true)
                         } label: {
-                            Label("Owner", systemImage: "crown.fill")
+                            Label(L("login.owner", "Owner"), systemImage: "crown.fill")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(SecondaryPillButtonStyle())
@@ -170,7 +171,7 @@ struct ContentView: View {
                         Button {
                             blockingManager.signInForDevelopment(asOwner: false)
                         } label: {
-                            Label("Friend", systemImage: "person.fill")
+                            Label(L("login.friend", "Friend"), systemImage: "person.fill")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(SecondaryPillButtonStyle())
@@ -186,16 +187,16 @@ struct ContentView: View {
 
     private var friendsPage: some View {
         page {
-            header("Friends", "Add friends with their Friend ID. Friends can only resolve requests for limits you assign to them.")
+            header(L("friends.title", "Friends"), L("friends.subtitle", "Add friends with their Friend ID. Friends can only resolve requests for limits you assign to them."))
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Your Friend ID", icon: "number")
+                sectionTitle(L("friends.your_id", "Your Friend ID"), icon: "number")
                 Text(blockingManager.currentAppUserID)
                     .font(.system(size: 22, weight: .bold, design: .monospaced))
                     .foregroundStyle(Theme.accent)
                     .textSelection(.enabled)
 
-                TextField("Friend ID", text: $friendCode)
+                TextField(L("friends.friend_id_placeholder", "Friend ID"), text: $friendCode)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
@@ -206,7 +207,7 @@ struct ContentView: View {
                         friendCode = ""
                     }
                 } label: {
-                    Label("Add friend", systemImage: "person.badge.plus")
+                    Label(L("friends.add", "Add friend"), systemImage: "person.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryPillButtonStyle())
@@ -215,9 +216,9 @@ struct ContentView: View {
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Current friends", icon: "person.2.fill")
+                sectionTitle(L("friends.current", "Current friends"), icon: "person.2.fill")
                 if blockingManager.friends.isEmpty {
-                    statusBanner("No friends yet.", icon: "person.crop.circle.badge.questionmark", color: Theme.warning)
+                    statusBanner(L("friends.none", "No friends yet."), icon: "person.crop.circle.badge.questionmark", color: Theme.warning)
                 } else {
                     ForEach(blockingManager.friends) { friend in
                         HStack {
@@ -251,10 +252,10 @@ struct ContentView: View {
 
     private var friendRequestsSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            sectionTitle("Friend requests", icon: "envelope.badge.fill")
+            sectionTitle(L("friends.requests", "Friend requests"), icon: "envelope.badge.fill")
 
             if blockingManager.incomingFriendRequests.isEmpty && blockingManager.outgoingFriendRequests.isEmpty {
-                statusBanner("No pending friend requests.", icon: "checkmark.circle.fill", color: Theme.success)
+                statusBanner(L("friends.no_pending", "No pending friend requests."), icon: "checkmark.circle.fill", color: Theme.success)
             }
 
             ForEach(blockingManager.incomingFriendRequests) { request in
@@ -262,16 +263,16 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(request.friend(for: blockingManager.currentAppUserID)?.displayName ?? "Friend")
                             .font(Theme.Font.heading())
-                        Text("Wants to add you")
+                        Text(L("friends.wants_to_add_you", "Wants to add you"))
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                     }
                     Spacer()
-                    Button("Accept") {
+                    Button(L("common.accept", "Accept")) {
                         Task { await blockingManager.acceptFriendRequest(request) }
                     }
                     .buttonStyle(PrimaryPillButtonStyle(compact: true))
-                    Button("Decline") {
+                    Button(L("common.decline", "Decline")) {
                         Task { await blockingManager.declineFriendRequest(request) }
                     }
                     .buttonStyle(SecondaryPillButtonStyle(compact: true))
@@ -286,7 +287,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(request.friend(for: blockingManager.currentAppUserID)?.displayName ?? "Friend")
                             .font(Theme.Font.heading())
-                        Text("Waiting for acceptance")
+                        Text(L("friends.waiting", "Waiting for acceptance"))
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                     }
@@ -304,7 +305,7 @@ struct ContentView: View {
 
     private var limitsPage: some View {
         page {
-            header("Limits", "Create limits, choose apps, set minutes, and assign friends who can approve extra time.")
+            header(L("limits.title", "Limits"), L("limits.subtitle", "Create limits, choose apps, set minutes, and assign friends who can approve extra time."))
 
             HStack {
                 Spacer()
@@ -313,13 +314,13 @@ struct ContentView: View {
                     showingPicker = true
                     Task { await blockingManager.refreshRemoteChanges() }
                 } label: {
-                    Label("New limit", systemImage: "plus")
+                    Label(L("limits.new", "New limit"), systemImage: "plus")
                 }
                 .buttonStyle(PrimaryPillButtonStyle(compact: true))
             }
 
             if blockingManager.limits.isEmpty {
-                statusBanner("No limits yet. Tap New limit to start.", icon: "plus.circle.fill", color: Theme.warning)
+                statusBanner(L("limits.none", "No limits yet. Tap New limit to start."), icon: "plus.circle.fill", color: Theme.warning)
             } else {
                 ForEach(blockingManager.limits) { limit in
                     limitRow(limit)
@@ -330,35 +331,35 @@ struct ContentView: View {
 
     private var requestPage: some View {
         page {
-            header("Request Time", "Select one of your limits and ask assigned friends for extra minutes.")
+            header(L("request.title", "Request Time"), L("request.subtitle", "Select one of your limits and ask assigned friends for extra minutes."))
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Limit", icon: "hourglass")
-                Picker("Limit", selection: $selectedRequestLimitID) {
-                    Text("Choose a limit").tag(UUID?.none)
+                sectionTitle(L("request.limit", "Limit"), icon: "hourglass")
+                Picker(L("request.limit", "Limit"), selection: $selectedRequestLimitID) {
+                    Text(L("request.choose_limit", "Choose a limit")).tag(UUID?.none)
                     ForEach(blockingManager.limits) { limit in
                         Text(limit.title).tag(Optional(limit.id))
                     }
                 }
                 .pickerStyle(.menu)
 
-                Stepper("\(requestMinutes) minutes", value: $requestMinutes, in: 5...180, step: 5)
+                Stepper("\(requestMinutes) \(L("common.minutes", "minutes"))", value: $requestMinutes, in: 5...180, step: 5)
                     .font(Theme.Font.heading())
 
                 if let limit = selectedRequestLimit {
                     if blockingManager.openOwnRequests.contains(where: { $0.limitID == limit.id }) {
-                        statusBanner("You already have an open request for this limit.", icon: "clock.fill", color: Theme.warning)
+                        statusBanner(L("request.open_exists", "You already have an open request for this limit."), icon: "clock.fill", color: Theme.warning)
                     }
                     Button {
                         Task { await blockingManager.requestMoreTime(limit: limit, minutes: requestMinutes) }
                     } label: {
-                        Label("Request more time", systemImage: "paperplane.fill")
+                        Label(L("request.more_time", "Request more time"), systemImage: "paperplane.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(PrimaryPillButtonStyle())
                     .disabled(blockingManager.openOwnRequests.contains(where: { $0.limitID == limit.id }))
                 } else {
-                    statusBanner("Create and select a limit first.", icon: "hourglass.badge.plus", color: Theme.warning)
+                    statusBanner(L("request.create_first", "Create and select a limit first."), icon: "hourglass.badge.plus", color: Theme.warning)
                 }
             }
             .sectionPanel()
@@ -369,10 +370,10 @@ struct ContentView: View {
 
     private var approvalsPage: some View {
         page {
-            header("Requests", "Approve or decline requests assigned to you.")
+            header(L("approvals.title", "Requests"), L("approvals.subtitle", "Approve or decline requests assigned to you."))
 
             if blockingManager.incomingRequests.isEmpty {
-                statusBanner("No requests assigned to you.", icon: "checkmark.circle.fill", color: Theme.success)
+                statusBanner(L("approvals.none", "No requests assigned to you."), icon: "checkmark.circle.fill", color: Theme.success)
             } else {
                 ForEach(blockingManager.incomingRequests) { request in
                     requestApprovalRow(request)
@@ -383,9 +384,9 @@ struct ContentView: View {
 
     private var settingsPage: some View {
         page {
-            header("Settings", blockingManager.isDeveloperSession ? "Development session" : "Signed in")
+            header(L("settings.title", "Settings"), blockingManager.isDeveloperSession ? L("settings.dev_session", "Development session") : L("settings.signed_in", "Signed in"))
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Account", icon: "person.crop.circle")
+                sectionTitle(L("settings.account", "Account"), icon: "person.crop.circle")
                 Text(blockingManager.currentUserDisplayName)
                     .font(Theme.Font.heading())
                 Text(blockingManager.currentAppUserID)
@@ -397,7 +398,7 @@ struct ContentView: View {
                     editingProfileName = true
                     blockingManager.needsDisplayName = true
                 } label: {
-                    Label("Change name", systemImage: "pencil")
+                    Label(L("settings.change_name", "Change name"), systemImage: "pencil")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
@@ -405,27 +406,36 @@ struct ContentView: View {
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Appearance", icon: "circle.lefthalf.filled")
-                Picker("Appearance", selection: $appAppearanceRaw) {
+                sectionTitle(L("settings.appearance", "Appearance"), icon: "circle.lefthalf.filled")
+                Picker(L("settings.appearance", "Appearance"), selection: $appAppearanceRaw) {
                     ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.title).tag(appearance.rawValue)
+                        Text(appearance.localizedTitle { key, fallback in L(key, fallback) }).tag(appearance.rawValue)
                     }
                 }
                 .pickerStyle(.segmented)
 
-                sectionTitle("Language", icon: "globe")
-                Picker("Language", selection: $appLanguageRaw) {
-                    ForEach(AppLanguage.allCases) { language in
-                        Text(language.displayName).tag(language.rawValue)
+                sectionTitle(L("settings.language", "Language"), icon: "globe")
+                if localization.availableLanguages.count > 3 {
+                    Picker(L("settings.language", "Language"), selection: $appLanguageRaw) {
+                        ForEach(localization.availableLanguages) { language in
+                            Text(language.displayName).tag(language.code)
+                        }
                     }
+                    .pickerStyle(.menu)
+                } else {
+                    Picker(L("settings.language", "Language"), selection: $appLanguageRaw) {
+                        ForEach(localization.availableLanguages) { language in
+                            Text(language.displayName).tag(language.code)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("App", icon: "info.circle.fill")
-                Text("Version 1.0")
+                sectionTitle(L("settings.app", "App"), icon: "info.circle.fill")
+                Text(L("settings.version", "Version 1.0"))
                     .font(Theme.Font.body())
 
                 Button {
@@ -433,7 +443,7 @@ struct ContentView: View {
                         openURL(url)
                     }
                 } label: {
-                    Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
+                    Label(L("settings.coffee", "Buy me a coffee"), systemImage: "cup.and.saucer.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
@@ -443,7 +453,7 @@ struct ContentView: View {
             Button {
                 blockingManager.signOut()
             } label: {
-                Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                Label(L("settings.sign_out", "Sign out"), systemImage: "rectangle.portrait.and.arrow.right")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryPillButtonStyle())
@@ -455,29 +465,29 @@ struct ContentView: View {
     #if DEBUG
     private var devPage: some View {
         page {
-            header("Dev", "Debug-only checks for CloudKit, push notifications, schema, and refresh.")
+            header(L("dev.title", "Dev"), L("dev.subtitle", "Debug-only checks for CloudKit, push notifications, schema, and refresh."))
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("CloudKit schema", icon: "icloud.and.arrow.up.fill")
+                sectionTitle(L("dev.schema", "CloudKit schema"), icon: "icloud.and.arrow.up.fill")
                 Button {
                     Task { await blockingManager.registerCloudSchemaForDevelopment() }
                 } label: {
-                    Label("Seed Development CloudKit schema", systemImage: "wand.and.stars")
+                    Label(L("dev.seed_schema", "Seed Development CloudKit schema"), systemImage: "wand.and.stars")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
-                Text("Run this from an Xcode Development build after deleting CloudKit schema, then deploy Development schema to Production for TestFlight.")
+                Text(L("dev.schema_help", "Run this from an Xcode Development build after deleting CloudKit schema, then deploy Development schema to Production for TestFlight."))
                     .font(Theme.Font.caption())
                     .foregroundStyle(Theme.textSecondary)
             }
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Push notifications", icon: "bell.badge.fill")
+                sectionTitle(L("dev.push", "Push notifications"), icon: "bell.badge.fill")
                 Button {
                     Task { await blockingManager.configureNotificationsForDiagnostics() }
                 } label: {
-                    Label("Register APNs + check subscriptions", systemImage: "antenna.radiowaves.left.and.right")
+                    Label(L("dev.register_push", "Register APNs + check subscriptions"), systemImage: "antenna.radiowaves.left.and.right")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryPillButtonStyle())
@@ -485,7 +495,7 @@ struct ContentView: View {
                 Button {
                     Task { await blockingManager.scheduleLocalNotificationTest() }
                 } label: {
-                    Label("Test local notification", systemImage: "bell.fill")
+                    Label(L("dev.test_local", "Test local notification"), systemImage: "bell.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
@@ -493,7 +503,7 @@ struct ContentView: View {
                 Button {
                     Task { await blockingManager.createDevelopmentTimeRequestPushTest() }
                 } label: {
-                    Label("Create time request push test", systemImage: "hourglass.badge.plus")
+                    Label(L("dev.test_time", "Create time request push test"), systemImage: "hourglass.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
@@ -501,7 +511,7 @@ struct ContentView: View {
                 Button {
                     Task { await blockingManager.createDevelopmentFriendRequestPushTest() }
                 } label: {
-                    Label("Create friend request push test", systemImage: "person.badge.plus")
+                    Label(L("dev.test_friend", "Create friend request push test"), systemImage: "person.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
@@ -509,11 +519,11 @@ struct ContentView: View {
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Refresh", icon: "arrow.clockwise")
+                sectionTitle(L("dev.refresh", "Refresh"), icon: "arrow.clockwise")
                 Button {
                     Task { await blockingManager.refreshRemoteChanges() }
                 } label: {
-                    Label("Refresh now", systemImage: "arrow.clockwise.circle.fill")
+                    Label(L("dev.refresh_now", "Refresh now"), systemImage: "arrow.clockwise.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryPillButtonStyle())
@@ -521,7 +531,7 @@ struct ContentView: View {
                 Button {
                     Task { await blockingManager.loadNotificationDiagnostics() }
                 } label: {
-                    Label("Reload diagnostics", systemImage: "list.bullet.clipboard.fill")
+                    Label(L("dev.reload_diagnostics", "Reload diagnostics"), systemImage: "list.bullet.clipboard.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryPillButtonStyle())
@@ -529,7 +539,7 @@ struct ContentView: View {
             .sectionPanel()
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                sectionTitle("Diagnostics output", icon: "stethoscope")
+                sectionTitle(L("dev.diagnostics", "Diagnostics output"), icon: "stethoscope")
                 Text(blockingManager.devDiagnostics)
                     .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .foregroundStyle(Theme.textSecondary)
@@ -548,13 +558,13 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                        sectionTitle("Limit details", icon: "hourglass")
-                        TextField("Title", text: $draftLimit.title)
+                        sectionTitle(L("editor.details", "Limit details"), icon: "hourglass")
+                        TextField(L("editor.title_placeholder", "Title"), text: $draftLimit.title)
                             .textFieldStyle(.roundedBorder)
-                        Stepper("\(draftLimit.minutes) minutes", value: $draftLimit.minutes, in: 5...240, step: 5)
-                        Picker("Mode", selection: $draftLimit.mode) {
+                        Stepper("\(draftLimit.minutes) \(L("common.minutes", "minutes"))", value: $draftLimit.minutes, in: 5...240, step: 5)
+                        Picker(L("editor.mode", "Mode"), selection: $draftLimit.mode) {
                             ForEach(LimitMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
+                                Text(limitModeTitle(mode)).tag(mode)
                             }
                         }
                         .pickerStyle(.segmented)
@@ -562,7 +572,7 @@ struct ContentView: View {
                             showingLimitEditor = false
                             showingPicker = true
                         } label: {
-                            Label("Edit apps", systemImage: "app.badge")
+                            Label(L("editor.edit_apps", "Edit apps"), systemImage: "app.badge")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(SecondaryPillButtonStyle())
@@ -570,9 +580,9 @@ struct ContentView: View {
                     .sectionPanel()
 
                     VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                        sectionTitle("Friends who can approve", icon: "person.2.fill")
+                        sectionTitle(L("editor.approvers", "Friends who can approve"), icon: "person.2.fill")
                         if blockingManager.friends.isEmpty {
-                            statusBanner("Add friends before assigning approvers.", icon: "person.badge.plus", color: Theme.warning)
+                            statusBanner(L("editor.add_friends_first", "Add friends before assigning approvers."), icon: "person.badge.plus", color: Theme.warning)
                         } else {
                             ForEach(blockingManager.friends) { friend in
                                 Toggle(friend.displayName, isOn: approverBinding(friend.appUserID))
@@ -583,11 +593,11 @@ struct ContentView: View {
 
                     if isEditingExistingLimit {
                         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                            sectionTitle("Delete limit", icon: "trash.fill")
+                            sectionTitle(L("editor.delete_section", "Delete limit"), icon: "trash.fill")
                             Button(role: .destructive) {
                                 showingDeleteLimitConfirmation = true
                             } label: {
-                                Label("Delete this limit", systemImage: "trash.fill")
+                                Label(L("editor.delete_button", "Delete this limit"), systemImage: "trash.fill")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(SecondaryPillButtonStyle())
@@ -597,14 +607,14 @@ struct ContentView: View {
                 }
                 .padding(Theme.Spacing.md)
             }
-            .navigationTitle(draftLimit.title.isEmpty ? "Limit" : draftLimit.title)
+            .navigationTitle(draftLimit.title.isEmpty ? L("editor.limit", "Limit") : draftLimit.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showingLimitEditor = false }
+                    Button(L("editor.cancel", "Cancel")) { showingLimitEditor = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+                    Button(L("editor.done", "Done")) {
                         Task {
                             await blockingManager.saveLimit(draftLimit)
                             showingLimitEditor = false
@@ -614,19 +624,19 @@ struct ContentView: View {
                 }
             }
             .confirmationDialog(
-                "Delete this limit?",
+                L("editor.delete_title", "Delete this limit?"),
                 isPresented: $showingDeleteLimitConfirmation,
                 titleVisibility: .visible
             ) {
-                Button("Delete limit", role: .destructive) {
+                Button(L("editor.delete_confirm", "Delete limit"), role: .destructive) {
                     Task {
                         await blockingManager.deleteLimit(draftLimit)
                         showingLimitEditor = false
                     }
                 }
-                Button("Cancel", role: .cancel) {}
+                Button(L("editor.cancel", "Cancel"), role: .cancel) {}
             } message: {
-                Text("This removes the limit and stops its Screen Time tracking.")
+                Text(L("editor.delete_message", "This removes the limit and stops its Screen Time tracking."))
             }
         }
     }
@@ -658,11 +668,11 @@ struct ContentView: View {
                         Text("\(timeStatus.totalAvailableMinutes)")
                             .font(Theme.Font.title(28))
                             .foregroundStyle(Theme.accent)
-                        Text("min total today")
+                        Text(L("limits.total_today", "min total today"))
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                         Spacer()
-                        Text("Screen Time active")
+                        Text(L("limits.screen_time_active", "Screen Time active"))
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                     }
@@ -671,25 +681,25 @@ struct ContentView: View {
                         DeviceActivityReport(.boundLimitUsage, filter: activityReportFilter(for: limit))
                             .frame(height: 32)
                     } else if blockingManager.isAuthorized {
-                        Text("Select individual apps to show exact app usage.")
+                        Text(L("limits.select_individual_apps", "Select individual apps to show exact app usage."))
                             .font(Theme.Font.caption())
                             .foregroundStyle(Theme.textSecondary)
                     }
                 }
 
                 HStack {
-                    Text("\(limit.minutes) min limit")
+                    Text("\(limit.minutes) \(L("limits.limit_suffix", "min limit"))")
                     Text("•")
-                    Text(limit.mode.title)
+                    Text(limitModeTitle(limit.mode))
                     if timeStatus.approvedExtraMinutes > 0 {
                         Text("•")
-                        Text("+\(timeStatus.approvedExtraMinutes) approved")
+                        Text("+\(timeStatus.approvedExtraMinutes) \(L("limits.approved_suffix", "approved"))")
                     }
                 }
                 .font(Theme.Font.caption())
                 .foregroundStyle(Theme.textSecondary)
 
-                Text("\(limit.approverIDs.count) approver(s)")
+                Text("\(limit.approverIDs.count) \(L("limits.approvers", "approver(s)"))")
                     .font(Theme.Font.caption())
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -761,29 +771,29 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(request.requesterName)
                         .font(Theme.Font.heading())
-                    Text("\(request.limitTitle) • \(request.requestedMinutes) minutes")
+                    Text("\(request.limitTitle) • \(request.requestedMinutes) \(L("common.minutes", "minutes"))")
                         .font(Theme.Font.caption())
                         .foregroundStyle(Theme.textSecondary)
                 }
                 Spacer()
-                Text(request.status.rawValue.capitalized)
+                Text(requestStatusTitle(request.status))
                     .font(Theme.Font.caption())
                     .foregroundStyle(request.status == .open ? Theme.warning : Theme.textSecondary)
             }
             if request.status == .open {
                 HStack {
-                    Button("Approve") {
+                    Button(L("approvals.approve", "Approve")) {
                         Task { await blockingManager.resolveRequest(request, approved: true) }
                     }
                     .buttonStyle(PrimaryPillButtonStyle(compact: true))
 
-                    Button("Decline") {
+                    Button(L("approvals.decline", "Decline")) {
                         Task { await blockingManager.resolveRequest(request, approved: false) }
                     }
                     .buttonStyle(SecondaryPillButtonStyle(compact: true))
                 }
             } else if let resolvedByName = request.resolvedByName {
-                Text("Resolved by \(resolvedByName)")
+                Text("\(L("approvals.resolved_by", "Resolved by")) \(resolvedByName)")
                     .font(Theme.Font.caption())
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -793,9 +803,9 @@ struct ContentView: View {
 
     private var requestHistory: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            sectionTitle("Your requests", icon: "clock.arrow.circlepath")
+            sectionTitle(L("request.history", "Your requests"), icon: "clock.arrow.circlepath")
             if blockingManager.ownRequests.isEmpty {
-                Text("No requests yet.")
+                Text(L("request.none_yet", "No requests yet."))
                     .font(Theme.Font.caption())
                     .foregroundStyle(Theme.textSecondary)
             } else {
@@ -804,7 +814,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(request.limitTitle)
                                 .font(Theme.Font.heading(16))
-                            Text("\(request.requestedMinutes) min • \(request.status.rawValue.capitalized)")
+                            Text("\(request.requestedMinutes) min • \(requestStatusTitle(request.status))")
                                 .font(Theme.Font.caption())
                                 .foregroundStyle(Theme.textSecondary)
                         }
@@ -825,15 +835,15 @@ struct ContentView: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text("Choose your name")
+                    Text(L("name.title", "Choose your name"))
                         .font(Theme.Font.title(30))
                         .foregroundStyle(Theme.textPrimary)
-                    Text("This name is shown in friend requests and time requests. It does not have to be unique.")
+                    Text(L("name.subtitle", "This name is shown in friend requests and time requests. It does not have to be unique."))
                         .font(Theme.Font.body())
                         .foregroundStyle(Theme.textSecondary)
                 }
 
-                TextField("Name", text: $profileNameDraft)
+                TextField(L("name.placeholder", "Name"), text: $profileNameDraft)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.words)
                     .onAppear {
@@ -848,7 +858,7 @@ struct ContentView: View {
                         editingProfileName = false
                     }
                 } label: {
-                    Label("Save name", systemImage: "checkmark")
+                    Label(L("name.save", "Save name"), systemImage: "checkmark")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryPillButtonStyle())
@@ -863,7 +873,7 @@ struct ContentView: View {
             .toolbar {
                 if canCancel {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") {
+                        Button(L("editor.cancel", "Cancel")) {
                             editingProfileName = false
                             blockingManager.needsDisplayName = false
                         }
@@ -1011,19 +1021,39 @@ struct ContentView: View {
         .background(color.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
     }
-}
 
-private enum AppLanguage: String, CaseIterable, Identifiable {
-    case enUS
-    case de
+    private func L(_ key: String, _ fallback: String) -> String {
+        localization.text(key, fallback: fallback)
+    }
 
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .enUS: return "English (US)"
-        case .de: return "Deutsch"
+    private func limitModeTitle(_ mode: LimitMode) -> String {
+        switch mode {
+        case .shared:
+            return L("mode.shared", "All apps together")
+        case .individual:
+            return L("mode.individual", "Each app individually")
         }
+    }
+
+    private func requestStatusTitle(_ status: TimeRequestStatus) -> String {
+        switch status {
+        case .open:
+            return L("status.open", "Open")
+        case .approved:
+            return L("status.approved", "Approved")
+        case .declined:
+            return L("status.declined", "Declined")
+        }
+    }
+
+    private func normalizeSelectedLanguage() {
+        guard !localization.availableLanguages.contains(where: { $0.code == appLanguageRaw }) else {
+            localization.loadLanguage(appLanguageRaw)
+            return
+        }
+        appLanguageRaw = localization.availableLanguages.first(where: { $0.code == "en-US" })?.code ??
+            localization.availableLanguages.first?.code ??
+            "en-US"
     }
 }
 
@@ -1042,11 +1072,11 @@ private enum AppAppearance: String, CaseIterable, Identifiable {
         }
     }
 
-    var title: String {
+    func localizedTitle(_ text: (String, String) -> String) -> String {
         switch self {
-        case .system: return "System"
-        case .light: return "Light"
-        case .dark: return "Dark"
+        case .system: return text("appearance.system", "System")
+        case .light: return text("appearance.light", "Light")
+        case .dark: return text("appearance.dark", "Dark")
         }
     }
 }
