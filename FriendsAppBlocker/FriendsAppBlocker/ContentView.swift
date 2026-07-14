@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var showingPicker = false
     @State private var showingLimitEditor = false
     @State private var showingDeleteLimitConfirmation = false
+    @State private var showingDeleteAccountConfirmation = false
     @State private var draftLimit = AppLimitPolicy.empty(ownerID: "", ownerName: "")
     @State private var profileNameDraft = ""
     @State private var editingProfileName = false
@@ -457,6 +458,26 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryPillButtonStyle())
+
+            Button(role: .destructive) {
+                showingDeleteAccountConfirmation = true
+            } label: {
+                Label(L("settings.delete_account", "Delete account"), systemImage: "trash.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(DestructivePillButtonStyle())
+            .confirmationDialog(
+                L("settings.delete_account_title", "Delete your account?"),
+                isPresented: $showingDeleteAccountConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L("settings.delete_account_confirm", "Delete account"), role: .destructive) {
+                    Task { await blockingManager.deleteAccount() }
+                }
+                Button(L("editor.cancel", "Cancel"), role: .cancel) {}
+            } message: {
+                Text(L("settings.delete_account_message", "This removes your Bound profile, your limits, your time requests, and disconnects your friendships where CloudKit allows it."))
+            }
 
             statusMessages
         }
@@ -1184,6 +1205,20 @@ private struct SecondaryPillButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .stroke(Theme.border, lineWidth: 1)
             }
+    }
+}
+
+private struct DestructivePillButtonStyle: ButtonStyle {
+    var compact = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.Font.heading(compact ? 14 : 16))
+            .foregroundStyle(.white)
+            .padding(.horizontal, compact ? Theme.Spacing.md : Theme.Spacing.lg)
+            .padding(.vertical, compact ? Theme.Spacing.sm : Theme.Spacing.md)
+            .background(Color.red.opacity(configuration.isPressed ? 0.72 : 0.95))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
     }
 }
 

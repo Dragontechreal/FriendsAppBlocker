@@ -311,6 +311,73 @@ final class BlockingManager: ObservableObject {
         ].forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 
+    func deleteAccount() async {
+        guard isAuthenticated else { return }
+
+        if isDeveloperSession {
+            signOut()
+            return
+        }
+
+        let userIdentifier = currentUserIdentifier
+        let appUserID = currentAppUserID
+        let displayName = currentUserDisplayName
+        guard !appUserID.isEmpty else {
+            signOut()
+            return
+        }
+
+        isSyncing = true
+        var deletionErrors: [String] = []
+
+        do {
+            try await writeFriendRemovalRecordsForAccountDeletion(appUserID: appUserID, displayName: displayName)
+        } catch {
+            deletionErrors.append("friendships: \(shortCloudDiagnostic(error))")
+        }
+
+        do {
+            try await deletePublicRecords(recordType: limitRecordType, predicate: NSPredicate(format: "ownerID == %@", appUserID))
+        } catch {
+            deletionErrors.append("limits: \(shortCloudDiagnostic(error))")
+        }
+
+        do {
+            try await deletePublicRecords(recordType: timeRequestRecordType, predicate: NSPredicate(format: "requesterID == %@", appUserID))
+        } catch {
+            deletionErrors.append("time requests: \(shortCloudDiagnostic(error))")
+        }
+
+        do {
+            try await deletePublicRecords(recordType: timeRequestRecordType, predicate: NSPredicate(format: "resolvedByID == %@", appUserID))
+        } catch {
+            deletionErrors.append("time request responses: \(shortCloudDiagnostic(error))")
+        }
+
+        do {
+            try await deleteRecordIfExists(CKRecord.ID(recordName: publicUserRecordName(for: appUserID)), in: publicDatabase)
+        } catch {
+            deletionErrors.append("public profile: \(shortCloudDiagnostic(error))")
+        }
+
+        if let userIdentifier {
+            do {
+                try await deleteRecordIfExists(CKRecord.ID(recordName: "user_\(userIdentifier)"), in: privateDatabase)
+            } catch {
+                deletionErrors.append("private profile: \(shortCloudDiagnostic(error))")
+            }
+        }
+
+        isSyncing = false
+
+        if deletionErrors.isEmpty {
+            infoMessage = "Account deleted."
+            signOut()
+        } else {
+            authError = "Account deletion incomplete: \(deletionErrors.joined(separator: "; "))"
+        }
+    }
+
     func refreshAll() async {
         guard isAuthenticated else { return }
         if isDeveloperSession {
@@ -1114,6 +1181,64 @@ final class BlockingManager: ObservableObject {
             _ = try await publicDatabase.save(publicRecord)
         } catch {
             setCloudError(error, context: "save profile")
+        }
+    }
+
+    private func writeFriendRemovalRecordsForAccountDeletion(appUserID: String, displayName: String) async throws {
+        let query = CKQuery(recordType: friendshipRecordType, predicate: NSPredicate(format: "ANY userIDs == %@", appUserID))
+        let (results, _) = try await publicDatabase.records(matching: query)
+        let connections = results.compactMap { result -> FriendConnection? in
+            guard case .success(let record) = result.1 else { return nil }
+            return readFriendship(from: record)
+        }
+        let latestConnections = latestFriendshipByPair(from: connections).values
+        for connection in latestConnections where connection.status != .declined {
+            guard let friendID = connection.userIDs.first(where: { $0 != appUserID }) else { continue }
+            let removal = FriendConnection(
+                id: "friendship_removed_\(friendshipPairKey([appUserID, friendID]))_\(appUserID)_\(UUID().uuidString)",
+                userIDs: [appUserID, friendID].sorted(),
+                displayNames: [
+                    appUserID: displayName,
+                    friendID: connection.displayNames[friendID] ?? friendID
+                ],
+                requestedByID: appUserID,
+                requestedToID: friendID,
+                status: .declined,
+                createdAt: Date()
+            )
+            let record = CKRecord(recordType: friendshipRecordType, recordID: CKRecord.ID(recordName: removal.id))
+            write(removal, to: record)
+            _ = try await publicDatabase.save(record)
+        }
+    }
+
+    private func deletePublicRecords(recordType: String, predicate: NSPredicate) async throws {
+        let recordIDs = try await publicRecordIDs(recordType: recordType, predicate: predicate)
+        for recordID in recordIDs {
+            try await deleteRecordIfExists(recordID, in: publicDatabase)
+        }
+    }
+
+    private func publicRecordIDs(recordType: String, predicate: NSPredicate) async throws -> [CKRecord.ID] {
+        let query = CKQuery(recordType: recordType, predicate: predicate)
+        let (results, _) = try await publicDatabase.records(
+            matching: query,
+            desiredKeys: [],
+            resultsLimit: CKQueryOperation.maximumResults
+        )
+        return results.compactMap { result in
+            guard case .success(let record) = result.1 else { return nil }
+            return record.recordID
+        }
+    }
+
+    private func deleteRecordIfExists(_ recordID: CKRecord.ID, in database: CKDatabase) async throws {
+        do {
+            _ = try await database.deleteRecord(withID: recordID)
+        } catch {
+            guard let cloudError = error as? CKError, cloudError.code == .unknownItem else {
+                throw error
+            }
         }
     }
 
