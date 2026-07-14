@@ -1601,10 +1601,11 @@ final class BlockingManager: ObservableObject {
 
     private func syncAppBadge(count explicitCount: Int? = nil) {
         let badgeCount = explicitCount ?? actionableNotificationCount
-        UNUserNotificationCenter.current().setBadgeCount(badgeCount) { [weak self] error in
+        UNUserNotificationCenter.current().setBadgeCount(badgeCount) { error in
             guard let error else { return }
+            let message = error.localizedDescription
             Task { @MainActor in
-                self?.devDiagnostics = "Badge update failed: \(error.localizedDescription)"
+                BlockingManager.shared.devDiagnostics = "Badge update failed: \(message)"
             }
         }
     }

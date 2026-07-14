@@ -29,7 +29,7 @@ struct BoundLimitUsageConfiguration {
     }
 }
 
-struct BoundLimitUsageReport: DeviceActivityReportScene {
+nonisolated struct BoundLimitUsageReport: DeviceActivityReportScene {
     let context: DeviceActivityReport.Context = .boundLimitUsage
     let content: (BoundLimitUsageConfiguration) -> BoundLimitUsageView
     private let usageMetadataSuiteName = "group.dev.supremezone.app.FriendsAppBlocker"
