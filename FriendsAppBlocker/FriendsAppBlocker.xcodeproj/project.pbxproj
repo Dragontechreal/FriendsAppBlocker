@@ -17,6 +17,7 @@
 		F448D89230070000003997F6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F448D89330070000003997F6 /* BoundActivityReport.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BoundActivityReport.entitlements; sourceTree = "<group>"; };
 		F4A274922FFC2D370056EDA1 /* Bound.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bound.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F4B000000000000000000001 /* Localizations */ = {isa = PBXFileReference; lastKnownFileType = folder; path = FriendsAppBlocker/Localizations; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXBuildFile section */
@@ -24,6 +25,7 @@
 		F448D88930060000003997F6 /* BoundDeviceActivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448D88630060000003997F6 /* BoundDeviceActivityMonitor.swift */; };
 		F448D89430070000003997F6 /* BoundActivityReport.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F448D89030070000003997F6 /* BoundActivityReport.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F448D89530070000003997F6 /* BoundActivityReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448D89130070000003997F6 /* BoundActivityReport.swift */; };
+		F4B000000000000000000002 /* Localizations in Resources */ = {isa = PBXBuildFile; fileRef = F4B000000000000000000001 /* Localizations */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,6 +108,7 @@
 			children = (
 				F448D877300272FF003997F6 /* Bound-Info.plist */,
 				F4A274942FFC2D370056EDA1 /* FriendsAppBlocker */,
+				F4B000000000000000000001 /* Localizations */,
 				F448D87D30060000003997F6 /* FriendsAppBlockerMonitor */,
 				F448D89930070000003997F6 /* FriendsAppBlockerReport */,
 				F4A274932FFC2D370056EDA1 /* Products */,
@@ -292,6 +295,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F4B000000000000000000002 /* Localizations in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
